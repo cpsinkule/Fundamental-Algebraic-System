@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test_calculator.py:*)",
+      "Bash(python example_characteristic_tuple.py:*)",
+      "Bash(python test_characteristic_tuples.py:*)",
+      "Bash(python test_full_calculator.py:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(cat:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
