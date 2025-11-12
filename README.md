@@ -474,6 +474,25 @@ res2 = probe_p_from_characteristic_tuples(tuples, extra, samples=32, backend='nu
 print(res2['likely'])
 ```
 
+### One-shot: y-vector from characteristic tuples
+
+Compute the Cramer's-rule y-vector directly from characteristic tuples and an extra row
+specification `(graph_idx, vertex, layer)`:
+
+```python
+from determinant_computer import DeterminantComputer
+
+tuples = [(3,1,5), (3,1,4)]
+y = DeterminantComputer.y_from_characteristic_tuples(tuples, (0, 0, 1))
+print(y)  # column vector
+
+# With mapping and simplification
+y_simpl, mapping = DeterminantComputer.y_from_characteristic_tuples(
+    tuples, (0, 0, 1), return_mapping=True, simplify=True
+)
+print(mapping)  # ordered base rows for the component
+```
+
 ### Notes
 
 - Base rows are generated automatically during `DeterminantComputer` initialization via a depth‑based selection.

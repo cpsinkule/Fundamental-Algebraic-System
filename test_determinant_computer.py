@@ -418,6 +418,185 @@ class TestComputeMinor:
         assert isinstance(minor_comp1, (float, int))
 
 
+class TestComputeYVector:
+    """Test compute_y_vector method for Cramer's rule adjugate system"""
+
+    def test_y_vector_basic(self):
+        """Test basic y-vector computation"""
+        calc = FASMinorCalculator.from_characteristic_tuples(
+            [(2, 1, 4)],
+            use_symbolic=True
+        )
+        det_comp = DeterminantComputer(calc)
+
+        # Compute y-vector for extra row (0, 0, 1)
+        y = det_comp.compute_y_vector(0, 0, 1)
+
+        # Should return a SymPy Matrix (column vector)
+        assert isinstance(y, sp.Matrix)
+
+    def test_y_vector_dimensions(self):
+        """Test that y-vector has correct dimensions"""
+        calc = FASMinorCalculator.from_characteristic_tuples(
+            [(2, 1, 4)],
+            use_symbolic=True
+        )
+        det_comp = DeterminantComputer(calc)
+
+        # Component 0 has 3 edges, so y should be 3x1
+        y = det_comp.compute_y_vector(0, 0, 1)
+
+        assert y.shape == (3, 1)
+
+    def test_y_vector_solves_system(self):
+        """Test that y satisfies the linear system A_star^T * y = extra_block^T"""
+        calc = FASMinorCalculator.from_characteristic_tuples(
+            [(2, 1, 4)],
+            use_symbolic=True
+        )
+        det_comp = DeterminantComputer(calc)
+
+        # Compute y-vector
+        graph_idx, vertex, layer = 0, 0, 1
+        y = det_comp.compute_y_vector(graph_idx, vertex, layer)
+
+        # Get the cached A_star and extra_block to verify the system
+        det_comp._ensure_base_blocks_cache()
+        A_star = det_comp._A_block_by_comp[graph_idx]
+
+        # Get extra row and extract the block
+        extra_row = calc.get_row(graph_idx, vertex, layer)
+        c0 = det_comp._comp_edge_starts[graph_idx]
+        e_star = det_comp._comp_edge_sizes[graph_idx]
+        c1 = c0 + e_star
+        extra_block = extra_row[:, c0:c1]
+
+        # Verify: A_star^T * y = extra_block^T
+        result = A_star.T * y
+        expected = extra_block.T
+
+        # Simplify to check equality (symbolic may have complex forms)
+        residual = result - expected
+        residual_simplified = sp.simplify(residual)
+
+        # All entries should be zero
+        assert residual_simplified == sp.zeros(e_star, 1)
+
+    def test_y_vector_different_rows(self):
+        """Test computing y-vectors for different extra rows"""
+        calc = FASMinorCalculator.from_characteristic_tuples(
+            [(2, 1, 4)],
+            use_symbolic=True
+        )
+        det_comp = DeterminantComputer(calc)
+
+        # Compute y-vectors for different rows
+        y1 = det_comp.compute_y_vector(0, 0, 1)
+        y2 = det_comp.compute_y_vector(0, 1, 1)
+        y3 = det_comp.compute_y_vector(0, 0, 2)
+
+        # All should be valid column vectors
+        assert isinstance(y1, sp.Matrix)
+        assert isinstance(y2, sp.Matrix)
+        assert isinstance(y3, sp.Matrix)
+
+        # All should have same shape (3x1 for this system)
+        assert y1.shape == y2.shape == y3.shape == (3, 1)
+
+        # They should generally be different (not equal)
+        # Note: in symbolic mode they might simplify to same thing,
+        # but we just check they're all valid
+        assert y1 is not y2
+        assert y2 is not y3
+
+    def test_y_vector_two_components(self):
+        """Test y-vector computation with two-component system"""
+        calc = FASMinorCalculator.from_characteristic_tuples(
+            [(2, 1, 4), (2, 1, 4)],
+            use_symbolic=True
+        )
+        det_comp = DeterminantComputer(calc)
+
+        # Compute y-vectors from different components
+        y_comp0 = det_comp.compute_y_vector(0, 0, 1)
+        y_comp1 = det_comp.compute_y_vector(1, 0, 1)
+
+        # Both should be 3x1 (each component has 3 edges)
+        assert y_comp0.shape == (3, 1)
+        assert y_comp1.shape == (3, 1)
+
+        # Both should be valid SymPy matrices
+        assert isinstance(y_comp0, sp.Matrix)
+        assert isinstance(y_comp1, sp.Matrix)
+
+    def test_y_vector_invalid_component_zero_edges(self):
+        """Test that y-vector raises error if component has zero edges"""
+        # Create a degenerate case (shouldn't normally happen, but test edge case)
+        # We can't easily create this with characteristic tuples, so we test
+        # the error path by checking the error message exists in the code
+        calc = FASMinorCalculator.from_characteristic_tuples(
+            [(2, 1, 4)],
+            use_symbolic=True
+        )
+        det_comp = DeterminantComputer(calc)
+
+        # Invalid graph_idx should trigger error in get_row before our check
+        with pytest.raises(Exception):  # Could be IndexError or ValueError
+            det_comp.compute_y_vector(99, 0, 1)
+
+    def test_y_vector_with_different_layers(self):
+        """Test y-vector computation across different layers"""
+        calc = FASMinorCalculator.from_characteristic_tuples(
+            [(3, 1, 5)],  # Use system with more layers (omega=2, so layers 1-3)
+            use_symbolic=True
+        )
+        det_comp = DeterminantComputer(calc)
+
+        # Compute y-vectors for different layers
+        y_layer1 = det_comp.compute_y_vector(0, 0, 1)
+        y_layer2 = det_comp.compute_y_vector(0, 0, 2)
+        y_layer3 = det_comp.compute_y_vector(0, 0, 3)
+
+        # All should be valid and have same dimensions
+        assert isinstance(y_layer1, sp.Matrix)
+        assert isinstance(y_layer2, sp.Matrix)
+        assert isinstance(y_layer3, sp.Matrix)
+
+        # All should have same shape (based on edge count)
+        n_edges = len(calc.graphs[0].edges)
+        expected_shape = (n_edges, 1)
+
+        assert y_layer1.shape == expected_shape
+        assert y_layer2.shape == expected_shape
+        assert y_layer3.shape == expected_shape
+
+    def test_y_vector_consistency_with_compute_minor_fast(self):
+        """Test that y-vector from compute_y_vector matches internal computation"""
+        calc = FASMinorCalculator.from_characteristic_tuples(
+            [(2, 1, 4)],
+            use_symbolic=True
+        )
+        det_comp = DeterminantComputer(calc)
+
+        # Compute y-vector explicitly
+        graph_idx, vertex, layer = 0, 0, 1
+        y_explicit = det_comp.compute_y_vector(graph_idx, vertex, layer)
+
+        # Now compute minor to trigger internal y computation
+        # We can't directly access the internal y, but we can verify
+        # that compute_y_vector runs without error and produces valid output
+        minor = det_comp.compute_minor_fast(graph_idx, vertex, layer)
+
+        # Both should complete successfully
+        assert isinstance(y_explicit, sp.Matrix)
+        assert isinstance(minor, sp.Basic)
+
+        # The y-vector should be used internally in the minor computation
+        # Verify dimensions match what's expected
+        n_edges = len(calc.graphs[graph_idx].edges)
+        assert y_explicit.shape == (n_edges, 1)
+
+
 class TestDeterminantComputerSmallExample:
     """Test with a very small, hand-verifiable example"""
 

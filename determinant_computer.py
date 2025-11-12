@@ -59,6 +59,8 @@ class DeterminantComputer:
         Compute the symbolic determinant of a matrix formed from specified rows
     compute_minor(graph_idx, vertex, layer):
         Compute a symbolic minor using base rows plus one user-specified row
+    compute_y_vector(graph_idx, vertex, layer):
+        Compute the theoretically significant y-vector from the adjugate system
     get_base_rows():
         Return the automatically generated base rows
     get_base_A_matrix():
@@ -67,6 +69,8 @@ class DeterminantComputer:
         Compute det of the base A submatrix (product of per-component dets)
     minor_from_characteristic_tuples(char_tuples, row, fast=True):
         Convenience one-shot API to compute a minor from characteristic tuples
+    y_from_characteristic_tuples(char_tuples, row, return_mapping=False, simplify=False):
+        One-shot API to compute the Cramer's-rule y-vector from characteristic tuples
     """
 
     def __init__(self, calculator: FASMinorCalculator):
@@ -137,6 +141,32 @@ class DeterminantComputer:
         g, v, s = row
         return det_comp.compute_minor_fast(g, v, s) if fast else det_comp.compute_minor(g, v, s)
 
+    @staticmethod
+    def y_from_characteristic_tuples(
+        char_tuples: List[Tuple[int, ...]],
+        row: Tuple[int, int, int],
+        *,
+        return_mapping: bool = False,
+        simplify: bool = False,
+    ):
+        """
+        One-shot helper: construct calculator from characteristic tuples and return
+        the Cramer's-rule y-vector for the given extra row.
+
+        Args:
+            char_tuples: list of per-component characteristic tuples
+            row: (graph_idx, vertex, layer) identifying the extra row
+            return_mapping: if True, also return the ordered base rows for that component
+            simplify: if True, apply sp.cancel to y entries for readability
+
+        Returns:
+            y (sp.Matrix) or (y, mapping) if return_mapping=True
+        """
+        calc = FASMinorCalculator.from_characteristic_tuples(char_tuples, use_symbolic=True)
+        det_comp = DeterminantComputer(calc)
+        g, v, s = row
+        return det_comp.compute_y_vector(g, v, s, return_mapping=return_mapping, simplify=simplify)
+
     def _generate_base_rows(self) -> List[Tuple[int, int, int]]:
         """
         Generate base rows using depth-based selection algorithm.
@@ -160,8 +190,8 @@ class DeterminantComputer:
 
             # Iterate through layers 1 to omega+1
             for layer in range(1, omega + 2):  # +2 because range is exclusive
-                # Select all vertices with depth >= layer
-                for vertex in graph.vertices:
+                # Select all vertices with depth >= layer (deterministic order)
+                for vertex in sorted(graph.vertices):
                     vertex_depth = graph.get_vertex_depth(vertex)
                     if vertex_depth >= layer:
                         base_rows.append((graph_idx, vertex, layer))
@@ -390,6 +420,202 @@ class DeterminantComputer:
             det_total += sign * b_i * minor_det
 
         return det_total
+
+    def compute_y_vector(
+        self,
+        graph_idx: int,
+        vertex: int,
+        layer: int,
+        return_mapping: bool = False,
+        simplify: bool = False,
+    ) -> sp.Matrix:
+        """
+        Compute the theoretically significant y-vector from the adjugate system.
+
+        This method explicitly computes the vector y that appears in the Cramer's
+        rule-like row-replacement determinant formula. The y-vector is the solution
+        to the linear system:
+
+            A_star^T * y = extra_block^T
+
+        where:
+        - A_star is the base A-block for the component containing the extra row
+        - extra_block is the A-columns from the user-specified extra row for that
+          component
+
+        **Theoretical Significance:**
+
+        The y-vector encodes how the extra row interacts with the base rows of the
+        same component. Each entry y[i] is the cofactor coefficient used in the
+        row-replacement determinant formula:
+
+            det(A with base row i replaced by extra row) = det(A_star) * y[i]
+
+        This is mathematically equivalent to Cramer's rule but computed via LU
+        decomposition (more numerically stable). The y-vector appears in the
+        Laplace expansion of the full minor:
+
+            minor = Σ (sign * b_r * minor_cofactor_r)
+
+        where the cofactor for each base row r in the same component as the extra
+        row is proportional to y[r].
+
+        **Connection to Cramer's Rule:**
+
+        In classical Cramer's rule for solving Ax = b, each solution component x_i
+        equals det(A_i)/det(A), where A_i has column i replaced by b. Here, we use
+        the transpose system and row replacements, achieving the same mathematical
+        result through LU decomposition instead of direct determinant computation.
+
+        Parameters:
+        -----------
+        graph_idx : int
+            Index of the component graph (0-based) for the extra row
+        vertex : int
+            Local vertex label within that component
+        layer : int
+            Layer number s >= 1
+
+        Returns:
+        --------
+        sp.Matrix
+            Column vector (shape e_star × 1) where e_star is the number of edges
+            in the specified component. Each entry y[i] corresponds to the i-th
+            base row from this component.
+
+        Raises:
+        -------
+        ValueError
+            - If the row specification is invalid
+            - If the component has zero edges (cannot form system)
+            - If the base A-block is singular (violates theoretical assumptions)
+
+        Examples:
+        ---------
+        >>> calc = FASMinorCalculator.from_characteristic_tuples(
+        ...     [(3, 1, 5), (3, 1, 4)], use_symbolic=True
+        ... )
+        >>> det_comp = DeterminantComputer(calc)
+        >>> # Compute y-vector for extra row (0, 0, 1)
+        >>> y = det_comp.compute_y_vector(0, 0, 1)
+        >>> print(y)  # Column vector with symbolic entries
+        >>> # Verify it solves the system: A_star^T * y = extra_block^T
+        >>> A_star = det_comp._A_block_by_comp[0]
+        >>> extra_row = calc.get_row(0, 0, 1)
+        >>> c0 = det_comp._comp_edge_starts[0]
+        >>> e = det_comp._comp_edge_sizes[0]
+        >>> extra_block = extra_row[:, c0:c0+e]
+        >>> residual = A_star.T * y - extra_block.T
+        >>> print(residual)  # Should be zero (or very close)
+
+        See Also:
+        ---------
+        compute_minor_fast : Uses y-vector internally for Laplace expansion
+        """
+        # Validate inputs (similar to compute_minor_fast)
+        if not isinstance(graph_idx, int) or graph_idx < 0 or graph_idx >= len(self.calculator.graphs):
+            raise ValueError(f"Invalid graph_idx {graph_idx} (must be 0-{len(self.calculator.graphs)-1})")
+        if not isinstance(layer, int) or layer < 1:
+            raise ValueError(f"layer must be a positive integer >= 1 (got {layer})")
+
+        user_row = (graph_idx, vertex, layer)
+
+        # Ensure cached per-component data
+        self._ensure_base_blocks_cache()
+        comp_edge_starts = self._comp_edge_starts
+        comp_edge_sizes = self._comp_edge_sizes
+        A_block_by_comp = self._A_block_by_comp
+        det_base_by_comp = self._det_base_by_comp
+
+        # Get A-block for the specified component
+        e_star = comp_edge_sizes[graph_idx]
+        if e_star == 0:
+            raise ValueError(
+                f"Component {graph_idx} has zero edges; cannot form y-vector system."
+            )
+
+        A_star = A_block_by_comp[graph_idx]
+        det_A_star = det_base_by_comp[graph_idx]
+
+        # Guard: ensure A_star is invertible per theory (p(u) present)
+        try:
+            det_chk = sp.simplify(det_A_star)
+        except Exception:
+            det_chk = det_A_star
+        if det_chk == 0:
+            raise ValueError(
+                f"Base A block for component {graph_idx} is singular (det=0). "
+                f"This violates the paper's assumption that det(A_base) contains "
+                f"the p(u) monomial. Cannot compute y-vector for singular system."
+            )
+
+        # Build the extra row A-block for this component
+        extra_full_row = self.calculator.get_row(*user_row)
+        c0s = comp_edge_starts[graph_idx]
+        c1s = c0s + e_star
+        extra_block = extra_full_row[:, c0s:c1s]
+
+        # Solve A_star^T * y = extra_block^T using LU decomposition
+        # This is the core "Cramer's rule" step
+        y = A_star.T.LUsolve(extra_block.T)
+
+        if simplify:
+            try:
+                y = y.applyfunc(sp.cancel)
+            except Exception:
+                # Fallback: shallow simplify if cancel fails
+                y = y.applyfunc(sp.simplify)
+
+        if return_mapping:
+            base_rows_by_comp = self._base_rows_by_comp
+            mapping = list(base_rows_by_comp[graph_idx])
+            return y, mapping  # type: ignore[return-value]
+
+        return y
+
+    def get_component_base_rows(self, graph_idx: int) -> List[Tuple[int, int, int]]:
+        """
+        Return the ordered base rows for a given component.
+
+        The order matches the row order used to assemble the per-component A-block
+        (A_star) and therefore the indexing of the y-vector returned by
+        compute_y_vector(return_mapping=True).
+
+        Args:
+            graph_idx: component index (0-based)
+
+        Returns:
+            List of (graph_idx, vertex, layer) tuples for this component.
+        """
+        if not isinstance(graph_idx, int) or graph_idx < 0 or graph_idx >= len(self.calculator.graphs):
+            raise ValueError(f"Invalid graph_idx {graph_idx} (must be 0-{len(self.calculator.graphs)-1})")
+        self._ensure_base_blocks_cache()
+        return list(self._base_rows_by_comp[graph_idx])
+
+    def get_A_star_and_extra_block(
+        self, graph_idx: int, vertex: int, layer: int
+    ) -> Tuple[sp.Matrix, sp.Matrix, List[Tuple[int, int, int]]]:
+        """
+        Return (A_star, extra_block, base_rows_in_component) for transparency.
+
+        - A_star: base A-block for the component graph_idx
+        - extra_block: A-columns of the user row restricted to that component
+        - base_rows_in_component: ordered base rows for this component
+        """
+        if not isinstance(graph_idx, int) or graph_idx < 0 or graph_idx >= len(self.calculator.graphs):
+            raise ValueError(f"Invalid graph_idx {graph_idx} (must be 0-{len(self.calculator.graphs)-1})")
+        if not isinstance(layer, int) or layer < 1:
+            raise ValueError(f"layer must be a positive integer >= 1 (got {layer})")
+        self._ensure_base_blocks_cache()
+        A_star = self._A_block_by_comp[graph_idx]
+        e_star = self._comp_edge_sizes[graph_idx]
+        if e_star == 0:
+            raise ValueError(f"Component {graph_idx} has zero edges; no A_star block exists.")
+        extra_row = self.calculator.get_row(graph_idx, vertex, layer)
+        c0 = self._comp_edge_starts[graph_idx]
+        extra_block = extra_row[:, c0:c0 + e_star]
+        base_rows_in_component = list(self._base_rows_by_comp[graph_idx])
+        return A_star, extra_block, base_rows_in_component
 
     def get_base_A_matrix(self) -> sp.Matrix:
         """
