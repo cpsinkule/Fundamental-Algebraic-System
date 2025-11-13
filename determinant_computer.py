@@ -33,8 +33,15 @@ Usage Example:
 """
 
 import sympy as sp
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from fas_minor_calculator import FASMinorCalculator
+
+# Optional import for display functionality
+try:
+    from output_display import SymbolicExpressionWidget
+    DISPLAY_AVAILABLE = True
+except ImportError:
+    DISPLAY_AVAILABLE = False
 
 
 class DeterminantComputer:
@@ -1323,3 +1330,249 @@ class DeterminantComputer:
             for row in rows[1:]:
                 matrix = matrix.col_join(row)
         return matrix
+
+    # =========================================================================
+    # DISPLAY WRAPPER METHODS
+    # =========================================================================
+
+    def compute_minor_display(
+        self,
+        graph_idx: int,
+        vertex: int,
+        layer: int,
+        name: Optional[str] = None,
+        **widget_kwargs
+    ):
+        """
+        Compute a minor and return it as an interactive display widget.
+
+        This method wraps compute_minor() to return a SymbolicExpressionWidget
+        instead of a raw SymPy expression. The widget provides an interactive
+        interface for viewing large expressions in Jupyter notebooks.
+
+        Parameters
+        ----------
+        graph_idx : int
+            Index of the component graph (0-based)
+        vertex : int
+            Local vertex label within that component
+        layer : int
+            Layer number s >= 1
+        name : str, optional
+            Custom name for the widget. If not provided, generates one like
+            "Minor(0,0,1)"
+        **widget_kwargs
+            Additional keyword arguments passed to SymbolicExpressionWidget
+            (e.g., max_preview_length, max_terms_display)
+
+        Returns
+        -------
+        SymbolicExpressionWidget
+            Interactive widget displaying the minor. Access the raw expression
+            via widget.expr
+
+        Raises
+        ------
+        ImportError
+            If ipywidgets or IPython are not installed
+        ValueError
+            If the row specification is invalid
+
+        Examples
+        --------
+        >>> calc = FASMinorCalculator.from_characteristic_tuples(
+        ...     [(3, 1, 5), (3, 1, 4)], use_symbolic=True
+        ... )
+        >>> det_comp = DeterminantComputer(calc)
+        >>> # Get interactive widget
+        >>> widget = det_comp.compute_minor_display(0, 0, 1)
+        >>> # Display in notebook (happens automatically if last line in cell)
+        >>> widget
+        >>> # Or explicitly:
+        >>> widget.display()
+        >>> # Access raw expression for computation:
+        >>> raw_expr = widget.expr
+        >>> coefficient = raw_expr.coeff(u_00, 1)
+        """
+        if not DISPLAY_AVAILABLE:
+            raise ImportError(
+                "Display functionality requires ipywidgets and IPython. "
+                "Install with: pip install ipywidgets"
+            )
+
+        # Compute the minor using the standard method
+        minor = self.compute_minor(graph_idx, vertex, layer)
+
+        # Generate name if not provided
+        if name is None:
+            name = f"Minor({graph_idx},{vertex},{layer})"
+
+        # Create and return widget
+        return SymbolicExpressionWidget(minor, name=name, **widget_kwargs)
+
+    def compute_minor_fast_display(
+        self,
+        graph_idx: int,
+        vertex: int,
+        layer: int,
+        name: Optional[str] = None,
+        **widget_kwargs
+    ):
+        """
+        Compute a minor using the fast method and return as display widget.
+
+        This method wraps compute_minor_fast() to return a
+        SymbolicExpressionWidget. Functionally identical to
+        compute_minor_display() but uses the block-structured Laplace
+        expansion for potentially better performance.
+
+        Parameters
+        ----------
+        graph_idx : int
+            Index of the component graph (0-based)
+        vertex : int
+            Local vertex label within that component
+        layer : int
+            Layer number s >= 1
+        name : str, optional
+            Custom name for the widget
+        **widget_kwargs
+            Additional keyword arguments for SymbolicExpressionWidget
+
+        Returns
+        -------
+        SymbolicExpressionWidget
+            Interactive widget displaying the minor
+
+        Raises
+        ------
+        ImportError
+            If ipywidgets or IPython are not installed
+        ValueError
+            If the row specification is invalid
+
+        See Also
+        --------
+        compute_minor_display : Standard minor computation with widget
+        compute_minor_fast : The underlying fast computation method
+        """
+        if not DISPLAY_AVAILABLE:
+            raise ImportError(
+                "Display functionality requires ipywidgets and IPython. "
+                "Install with: pip install ipywidgets"
+            )
+
+        # Compute using fast method
+        minor = self.compute_minor_fast(graph_idx, vertex, layer)
+
+        # Generate name if not provided
+        if name is None:
+            name = f"Minor({graph_idx},{vertex},{layer})"
+
+        # Create and return widget
+        return SymbolicExpressionWidget(minor, name=name, **widget_kwargs)
+
+    def compute_y_vector_display(
+        self,
+        graph_idx: int,
+        vertex: int,
+        layer: int,
+        name: Optional[str] = None,
+        return_mapping: bool = False,
+        simplify: bool = False,
+        **widget_kwargs
+    ):
+        """
+        Compute the y-vector and return components as display widgets.
+
+        This method wraps compute_y_vector() to return widgets for viewing
+        the vector components. If return_mapping=False, returns a single
+        widget containing the entire vector. If return_mapping=True, returns
+        a dict mapping edge labels to individual component widgets.
+
+        Parameters
+        ----------
+        graph_idx : int
+            Index of the component graph (0-based)
+        vertex : int
+            Local vertex label within that component
+        layer : int
+            Layer number s >= 1
+        name : str, optional
+            Custom name prefix for widgets
+        return_mapping : bool, optional
+            If True, return dict of {edge_label: widget} for each component.
+            If False (default), return single widget for entire vector.
+        simplify : bool, optional
+            If True, attempt to simplify y-vector components (may be slow)
+        **widget_kwargs
+            Additional keyword arguments for SymbolicExpressionWidget
+
+        Returns
+        -------
+        SymbolicExpressionWidget or dict
+            If return_mapping=False: Single widget for the full y-vector
+            If return_mapping=True: Dict mapping edge labels to component widgets
+
+        Raises
+        ------
+        ImportError
+            If ipywidgets or IPython are not installed
+        ValueError
+            If the row specification is invalid
+
+        Examples
+        --------
+        >>> # Get single widget for entire vector
+        >>> y_widget = det_comp.compute_y_vector_display(0, 0, 1)
+        >>> y_widget.display()
+        >>>
+        >>> # Get individual component widgets
+        >>> y_components = det_comp.compute_y_vector_display(
+        ...     0, 0, 1, return_mapping=True
+        ... )
+        >>> # Display specific component
+        >>> y_components[(0, (0, 1))].display()
+        """
+        if not DISPLAY_AVAILABLE:
+            raise ImportError(
+                "Display functionality requires ipywidgets and IPython. "
+                "Install with: pip install ipywidgets"
+            )
+
+        # Compute y-vector (with or without mapping)
+        if return_mapping:
+            y_mapping = self.compute_y_vector(
+                graph_idx, vertex, layer,
+                return_mapping=True,
+                simplify=simplify
+            )
+
+            # Create widgets for each component
+            widget_mapping = {}
+            for edge_label, y_component in y_mapping.items():
+                comp_idx, edge = edge_label
+                comp_name = f"y_{{{comp_idx},{edge}}}"
+                if name:
+                    comp_name = f"{name}_{comp_name}"
+
+                widget_mapping[edge_label] = SymbolicExpressionWidget(
+                    y_component,
+                    name=comp_name,
+                    **widget_kwargs
+                )
+
+            return widget_mapping
+        else:
+            y_vector = self.compute_y_vector(
+                graph_idx, vertex, layer,
+                return_mapping=False,
+                simplify=simplify
+            )
+
+            # Generate name if not provided
+            if name is None:
+                name = f"Y-Vector({graph_idx},{vertex},{layer})"
+
+            # Create widget for entire vector
+            return SymbolicExpressionWidget(y_vector, name=name, **widget_kwargs)

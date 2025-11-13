@@ -19,7 +19,6 @@ Assumptions and setup:
 from typing import List, Tuple, Dict, Set
 import sympy as sp
 from sympy import latex
-import time
 
 
 class ComponentGraph:
@@ -627,15 +626,6 @@ class FASMinorCalculator:
                                 symbol_name = f'c^{{({g_l},{vertex_l})}}_{{({g_w},{vertex_w}),({g_v},{vertex_v})}}'
                                 self.structure_functions_symbolic[key] = sp.Symbol(symbol_name)
 
-    def set_structure_functions(self, functions: Dict[Tuple[int, int, int], any]):
-        """
-        Set structure function values.
-
-        Args:
-            functions: Dictionary mapping (graph_idx, vertex, layer) to function value
-        """
-        self.structure_functions = functions
-
     def set_alpha_values(self, alphas: Dict[int, any]):
         """
         Set alpha coefficient values.
@@ -649,14 +639,7 @@ class FASMinorCalculator:
         """
         self.alphas = alphas
 
-    def set_b_values(self, b_values: Dict[Tuple[int, int, int], any]):
-        """
-        Set b vector values.
-
-        Args:
-            b_values: Dictionary mapping (graph_idx, vertex, layer) to b value
-        """
-        self.b_values = b_values
+    # Removed unused numeric-only setters (structure functions, b values)
 
     def get_vertex_component_map(self) -> Dict[int, int]:
         """

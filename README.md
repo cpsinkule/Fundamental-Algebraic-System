@@ -24,6 +24,8 @@ pip install -r requirements.txt
 
 Dependencies:
 - `sympy`: For symbolic computation (required)
+- `ipywidgets`: For interactive notebook display widgets (optional, recommended for Jupyter/Colab)
+- `cupy`: For optional GPU acceleration (optional)
 
 ## Usage
 
@@ -69,30 +71,7 @@ print(f"Row 1: {row_1}")
 
 ## Examples
 
-Run the example file to see various usage patterns:
-
-```bash
-python example_usage.py
-```
-
-Examples include:
-- Two component graphs (non-trivial case)
-- Using custom structure functions with multiple components
-- Symbolic computation with multiple components
-- Three component graphs with mixed layers
-
-### Example: Structure Functions
-
-```python
-# Set custom structure function values
-# Key format: (graph_idx, vertex, layer_difference)
-structure_funcs = {
-    (0, 1, 0): 2.0,   # Graph 0, vertex 1, layer diff 0
-    (0, 1, 1): 1.5,   # Graph 0, vertex 1, layer diff 1
-    (1, 3, 0): 3.0,   # Graph 1, vertex 3, layer diff 0
-}
-calc.set_structure_functions(structure_funcs)
-```
+- Notebook: examples/viewing_large_outputs.ipynb shows how to interactively view large symbolic expressions using the display widgets.
 
 ### Example: Symbolic Computation
 
@@ -185,6 +164,114 @@ Root monomial product (base A):
 ## Computing Determinants
 
 The `determinant_computer` module provides a convenient interface for computing determinants from calculator rows using SymPy's `det()` function. Only symbolic computation is supported; numeric minors are not defined in this calculator.
+
+## Viewing Large Outputs in Notebooks
+
+When computing minors for multi-component systems, the symbolic expressions can grow extremely large (millions of characters), making them impossible to view in Jupyter or Colab notebooks. The calculator provides interactive widgets for viewing these expressions comfortably.
+
+### Quick Start: Display Widgets
+
+Instead of printing raw expressions, use the `*_display()` methods:
+
+```python
+from fas_minor_calculator import FASMinorCalculator
+from determinant_computer import DeterminantComputer
+
+# Create calculator and determinant computer
+calc = FASMinorCalculator.from_characteristic_tuples(
+    [(3, 1, 5), (3, 1, 4)],
+    use_symbolic=True
+)
+det_comp = DeterminantComputer(calc)
+
+# OLD WAY (not recommended for large expressions):
+# minor = det_comp.compute_minor(0, 0, 1)
+# print(minor)  # Could output millions of characters!
+
+# NEW WAY (recommended for notebooks):
+widget = det_comp.compute_minor_display(0, 0, 1)
+widget  # Displays interactive widget in notebook
+```
+
+The widget shows:
+- **Summary**: Expression type, size, term count, degree, variable count
+- **Expandable sections**: LaTeX preview, top N terms, simplified form, etc.
+- **Full access**: The complete SymPy expression is accessible via `widget.expr`
+- **Export**: Save very large expressions to files
+
+### Installing Widget Support
+
+The display functionality requires `ipywidgets`:
+
+```bash
+pip install ipywidgets
+
+# For Jupyter Notebook:
+jupyter nbextension enable --py widgetsnbextension
+
+# For JupyterLab:
+jupyter labextension install @jupyter-widgets/jupyterlab-manager
+
+# Google Colab: works out of the box
+```
+
+### Available Display Methods
+
+All display methods return a `SymbolicExpressionWidget` that wraps the SymPy expression:
+
+```python
+# Minor computation with widget
+widget = det_comp.compute_minor_display(0, 0, 1)
+
+# Fast minor computation with widget
+widget_fast = det_comp.compute_minor_fast_display(0, 0, 1)
+
+# Y-vector with widget
+y_widget = det_comp.compute_y_vector_display(0, 0, 1)
+
+# Y-vector components as individual widgets
+y_components = det_comp.compute_y_vector_display(
+    0, 0, 1,
+    return_mapping=True
+)
+```
+
+### Working with Widgets
+
+```python
+# Access the full expression for computation
+minor_expr = widget.expr
+coefficient = minor_expr.coeff(some_symbol, 1)
+
+# View first N terms
+widget.show_terms(10)
+
+# Export to file
+widget.export_to_file("my_minor.txt")
+
+# Get LaTeX (optionally truncated)
+latex = widget.get_latex(truncate=1000)
+
+# Customize display
+custom_widget = det_comp.compute_minor_display(
+    0, 0, 1,
+    name="Custom Minor Name",
+    max_preview_length=1000,
+    max_terms_display=20
+)
+```
+
+### Example Notebook
+
+See `examples/viewing_large_outputs.ipynb` for a comprehensive tutorial with:
+- Before/after comparison
+- Multiple examples
+- Performance tips
+- Troubleshooting guide
+
+### Backward Compatibility
+
+The original methods (`compute_minor()`, `compute_minor_fast()`, `compute_y_vector()`) work exactly as before and return raw SymPy expressions. The `*_display()` methods are completely optional and provide an alternative for better notebook viewing.
 
 ### Optional GPU Probing (Numeric, preserves symbolic results)
 

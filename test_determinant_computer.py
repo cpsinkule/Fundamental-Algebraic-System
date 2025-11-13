@@ -52,35 +52,7 @@ class TestDeterminantComputerBasics:
         # Result should be a SymPy expression
         assert isinstance(det, sp.Basic)
 
-    def test_compute_determinant_numeric(self):
-        """Test computing determinant in numeric mode"""
-        # Create calculator with custom values
-        calc = FASMinorCalculator.from_characteristic_tuples(
-            [(2, 1, 4)],
-            use_symbolic=False
-        )
-
-        # Set some concrete values for structure functions
-        calc.set_structure_functions({
-            (0, 0, 1): 1.0,
-            (0, 0, 2): 1.0,
-        })
-
-        det_comp = DeterminantComputer(calc)
-
-        # Same row specs as symbolic test
-        row_specs = [
-            (0, 0, 1),
-            (0, 1, 1),
-            (0, 0, 2),
-            (0, 1, 2),
-        ]
-
-        # Compute determinant
-        det = det_comp.compute_determinant(row_specs)
-
-        # Result should be a float
-        assert isinstance(det, (float, int))
+    # Removed numeric-mode determinant test (calculator is symbolic-only)
 
     def test_get_matrix(self):
         """Test the get_matrix method"""
@@ -217,30 +189,7 @@ class TestDeterminantComputerValidation:
 class TestDeterminantComputerIntegration:
     """Test integration with FASMinorCalculator"""
 
-    def test_two_component_system(self):
-        """Test determinant computation with multiple components"""
-        # Use numeric mode for faster computation (symbolic 7x7 det is very slow)
-        calc = FASMinorCalculator.from_characteristic_tuples(
-            [(2, 1, 4), (2, 1, 4)],
-            use_symbolic=False
-        )
-        det_comp = DeterminantComputer(calc)
-
-        # This system has 6 edges (3 per component), so 7 columns total
-        # Need 7 rows for square matrix
-        row_specs = [
-            (0, 0, 1),
-            (0, 1, 1),
-            (0, 0, 2),
-            (1, 0, 1),
-            (1, 1, 1),
-            (1, 0, 2),
-            (1, 1, 2),
-        ]
-
-        # Should successfully compute determinant
-        det = det_comp.compute_determinant(row_specs)
-        assert isinstance(det, (float, int))
+    # Removed numeric two-component determinant test (symbolic-only)
 
     def test_mixed_layers(self):
         """Test using rows from different layers"""
@@ -388,34 +337,9 @@ class TestComputeMinor:
         assert isinstance(minor_2, sp.Basic)
         assert isinstance(minor_3, sp.Basic)
 
-    def test_compute_minor_numeric_mode(self):
-        """Test compute_minor in numeric mode"""
-        calc = FASMinorCalculator.from_characteristic_tuples(
-            [(2, 1, 4)],
-            use_symbolic=False
-        )
-        det_comp = DeterminantComputer(calc)
+    # Removed numeric compute_minor test (symbolic-only)
 
-        # Compute minor
-        minor = det_comp.compute_minor(0, 0, 1)
-
-        # Should return a float
-        assert isinstance(minor, (float, int))
-
-    def test_compute_minor_two_components(self):
-        """Test compute_minor with two-component system"""
-        calc = FASMinorCalculator.from_characteristic_tuples(
-            [(2, 1, 4), (2, 1, 4)],
-            use_symbolic=False  # Use numeric for speed
-        )
-        det_comp = DeterminantComputer(calc)
-
-        # Compute minors from different components
-        minor_comp0 = det_comp.compute_minor(0, 0, 1)
-        minor_comp1 = det_comp.compute_minor(1, 0, 1)
-
-        assert isinstance(minor_comp0, (float, int))
-        assert isinstance(minor_comp1, (float, int))
+    # Removed numeric two-component compute_minor test (symbolic-only)
 
 
 class TestComputeYVector:

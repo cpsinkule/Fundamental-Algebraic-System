@@ -153,7 +153,7 @@ print(f"b²_(0,0) = {b_entry2}")
 To have non-zero b vector entries, one could:
 
 1. **Extend structure functions**: Create c^l_{w,v} with vertex superscripts
-2. **User-specified values**: Use `set_b_values()` for specific entries
+2. (reserved) User-specified overrides could be added in a future API if needed
 3. **Alternative formulas**: Implement different b vector computation based on specific system structure
 
 ---

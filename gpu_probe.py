@@ -130,7 +130,13 @@ class GPUMinorProbe:
         # Shared ordered symbol list: union of free symbols across exprs
         sym_set = set()  # type: ignore
         for e in exprs:
-            sym_set.update(e.free_symbols)
+            # Some entries may be plain Python ints (e.g., 0); sympify to be safe
+            try:
+                fs = e.free_symbols  # type: ignore[attr-defined]
+            except AttributeError:
+                e = sp.sympify(e)
+                fs = getattr(e, 'free_symbols', set())
+            sym_set.update(fs)
         # Stable ordering by name
         var_list = sorted(sym_set, key=lambda s: s.name)
 
@@ -264,6 +270,36 @@ class GPUMinorProbe:
         mod = self._mod
         vals = [self.evaluate_minor_numeric(extra_row, a) for a in assignments_list]
         return mod.asarray(vals)
+
+    # ----------------------- Convenience helpers (optional) -----------------------
+    def random_assignments(
+        self,
+        extra_row: Tuple[int, int, int],
+        seed: Optional[int] = None,
+        low: float = -1.0,
+        high: float = 1.0,
+    ) -> Dict[sp.Symbol, Any]:
+        """
+        Generate a random assignment for all symbols needed by the extra-row
+        pipeline. Use nonzero values to avoid trivial zeros.
+
+        Returns a dict mapping SymPy symbols to numeric values based on the
+        precomputed var_list for the specified extra_row.
+        """
+        rng = np.random.default_rng(seed)
+        payload = self._extra_cache.get(extra_row)
+        if payload is None:
+            self._prepare_for_extra_row(extra_row)
+            payload = self._extra_cache[extra_row]
+        var_list: List[sp.Symbol] = payload['var_list']
+        vals: Dict[sp.Symbol, Any] = {}
+        for s in var_list:
+            # Avoid zeros; sample from [low, high] excluding a small neighborhood of 0
+            v = rng.uniform(low, high)
+            while abs(v) < 1e-6:
+                v = rng.uniform(low, high)
+            vals[s] = v
+        return vals
 
     # -------------------- Monomial probing (numeric prefilter) -------------------
     def _u_symbol_sets(self) -> Tuple[set, set]:
@@ -454,30 +490,3 @@ def probe_p_from_characteristic_tuples(
     probe = GPUMinorProbe(calc, det_comp, backend=backend)
     probe._prepare_for_extra_row(row)
     return probe.probe_p_in_minor(row, samples=samples, seed=seed, tol=tol)
-
-    # ----------------------- Convenience helpers (optional) -----------------------
-    def random_assignments(
-        self,
-        extra_row: Tuple[int, int, int],
-        seed: Optional[int] = None,
-        low: float = -1.0,
-        high: float = 1.0,
-    ) -> Dict[sp.Symbol, Any]:
-        """
-        Generate a random assignment for all symbols needed by the extra-row
-        pipeline. Use nonzero values to avoid trivial zeros.
-        """
-        rng = np.random.default_rng(seed)
-        payload = self._extra_cache.get(extra_row)
-        if payload is None:
-            self._prepare_for_extra_row(extra_row)
-            payload = self._extra_cache[extra_row]
-        var_list: List[sp.Symbol] = payload['var_list']
-        vals: Dict[sp.Symbol, Any] = {}
-        for s in var_list:
-            # Avoid zeros; sample from [low, high] excluding a small neighborhood of 0
-            v = rng.uniform(low, high)
-            while abs(v) < 1e-6:
-                v = rng.uniform(low, high)
-            vals[s] = v
-        return vals
