@@ -7,7 +7,8 @@
       "Bash(python test_full_calculator.py:*)",
       "Bash(python:*)",
       "Bash(python3:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []
