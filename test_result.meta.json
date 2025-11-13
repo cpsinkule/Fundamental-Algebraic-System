@@ -1,0 +1,20 @@
+{
+  "tuples": [
+    [
+      2,
+      1,
+      4
+    ]
+  ],
+  "row": [
+    0,
+    0,
+    1
+  ],
+  "minor_len": 1,
+  "minor_free_symbols": [],
+  "y_shape": [
+    3,
+    1
+  ]
+}
