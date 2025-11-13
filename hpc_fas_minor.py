@@ -607,6 +607,8 @@ class DeterminantComputer:
         c1s = c0s + e_star
         extra_block = extra_full_row[:, c0s:c1s]
         y = A_star.T.LUsolve(extra_block.T)
+        # Cancel rational expressions in y to simplify before use
+        y = y.applyfunc(sp.cancel)
 
         comp_rows_star = base_rows_by_comp[graph_idx]
         index_in_star = {r: i for i, r in enumerate(comp_rows_star)}
@@ -624,6 +626,8 @@ class DeterminantComputer:
                 replaced_det = det_A_star * y[idx, 0]
                 minor_det = prod_other * replaced_det
             det_total += sign * b_i * minor_det
+        # Cancel any remaining rational expressions before returning
+        det_total = sp.cancel(det_total)
         return det_total
 
     def compute_y_vector(self, graph_idx: int, vertex: int, layer: int) -> sp.Matrix:
@@ -692,6 +696,14 @@ class DeterminantComputer:
         mono = self._build_monomial_from_spec(monomial_spec)
         if match not in ('exact', 'divides'):
             raise ValueError("match must be 'exact' or 'divides'")
+
+        # Defensive: cancel any remaining rational expressions before creating Poly
+        try:
+            expr = sp.cancel(expr)
+        except Exception:
+            # If cancel fails, try to continue anyway
+            pass
+
         poly = sp.Poly(expr, *gens, domain='EX')
         if match == 'exact':
             return poly.coeff_monomial(mono)
@@ -774,6 +786,8 @@ class DeterminantComputer:
         c0s = self._comp_edge_starts[graph_idx]
         extra_block = extra_full_row[:, c0s:c0s + e_star]
         y = A_star.T.LUsolve(extra_block.T)
+        # Cancel rational expressions in y to simplify before use
+        y = y.applyfunc(sp.cancel)
 
         comp_rows_star = base_rows_by_comp[graph_idx]
         index_in_star = {r: i for i, r in enumerate(comp_rows_star)}
@@ -800,6 +814,9 @@ class DeterminantComputer:
         E = det_base * S
         if expand:
             E = sp.expand(E)
+
+        # Cancel rational expressions before passing to Poly
+        E = sp.cancel(E)
 
         # Poly-based divides residual of p
         p_spec = self.base_A_root_product_spec()

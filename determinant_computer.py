@@ -396,6 +396,8 @@ class DeterminantComputer:
 
         # Solve A_star^T * y = extra_block^T; then row-replacement det for row i is det(A_star) * y[i]
         y = A_star.T.LUsolve(extra_block.T)
+        # Cancel rational expressions in y to simplify before use
+        y = y.applyfunc(sp.cancel)
 
         # Helper: map base row spec in g* to its index within A_star
         comp_rows_star = base_rows_by_comp[graph_idx]
@@ -426,6 +428,8 @@ class DeterminantComputer:
 
             det_total += sign * b_i * minor_det
 
+        # Cancel any remaining rational expressions before returning
+        det_total = sp.cancel(det_total)
         return det_total
 
     def compute_y_vector(
@@ -729,6 +733,13 @@ class DeterminantComputer:
 
         if match not in ('exact', 'divides'):
             raise ValueError("match must be 'exact' or 'divides'")
+
+        # Defensive: cancel any remaining rational expressions before creating Poly
+        try:
+            expr = sp.cancel(expr)
+        except Exception:
+            # If cancel fails, try to continue anyway
+            pass
 
         poly = sp.Poly(expr, *gens, domain='EX')
 
@@ -1089,6 +1100,8 @@ class DeterminantComputer:
 
         # y from A_star^T y = extra_block^T
         y = A_star.T.LUsolve(extra_block.T)
+        # Cancel rational expressions in y to simplify before use
+        y = y.applyfunc(sp.cancel)
 
         # Map base row -> index within A_star
         comp_rows_star = base_rows_by_comp[graph_idx]
@@ -1110,7 +1123,10 @@ class DeterminantComputer:
 
         # coeff(p in det(A_base)) via fast per-component method
         c_base = self.coeff_of_base_A_root_product_fast()
-        return c_base * S
+        result = c_base * S
+        # Cancel any remaining rational expressions before returning
+        result = sp.cancel(result)
+        return result
 
     def find_monomial_in_minor(
         self,
