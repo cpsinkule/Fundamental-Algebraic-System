@@ -401,9 +401,13 @@ def extract_numeric_blocks_from_symbolic(
     # Ensure cache is built
     det_computer._ensure_base_blocks_cache()
 
+    # Extract component structure info (needed both for symbol collection and blocks)
+    component_edge_sizes = dict(det_computer._comp_edge_sizes)
+    component_edge_starts = dict(det_computer._comp_edge_starts)
+    base_rows_by_comp = dict(det_computer._base_rows_by_comp)
+
     # If symbol_values not provided, collect all symbols and assign random values
     if symbol_values is None:
-        import numpy as np
         np.random.seed(random_seed)
 
         all_symbols = set()
@@ -420,8 +424,17 @@ def extract_numeric_blocks_from_symbolic(
                     for j in range(A_block_sym.shape[1]):
                         all_symbols.update(A_block_sym[i, j].free_symbols)
 
-        # Create random assignments in (0, 1] to avoid zeros
-        # and extremely tiny values that might spuriously introduce singularities.
+        # Collect symbols from b-entries for all base rows to ensure the map
+        # covers alpha parameters and vertex-superscript structure functions
+        # that may appear only in the b column.
+        for rows_list in base_rows_by_comp.values():
+            for row_spec in rows_list:
+                b_expr_sym = calc.build_matrix_entry(row_spec, ('b', None, None))
+                if hasattr(b_expr_sym, "free_symbols"):
+                    all_symbols.update(b_expr_sym.free_symbols)
+
+        # Create random assignments in (0, 1] to avoid zeros and extremely tiny values
+        # that might spuriously introduce singularities.
         if all_symbols:
             eps = 1e-2
             symbol_values = {
@@ -430,12 +443,6 @@ def extract_numeric_blocks_from_symbolic(
             }
         else:
             symbol_values = {}
-
-    # Extract component structure info
-    component_edge_sizes = dict(det_computer._comp_edge_sizes)
-    component_edge_starts = dict(det_computer._comp_edge_starts)
-    base_rows_by_comp = dict(det_computer._base_rows_by_comp)
-
     # Convert symbolic A-blocks to numeric
     A_blocks = {}
     for comp_idx, A_block_sym in det_computer._A_block_by_comp.items():
@@ -521,11 +528,22 @@ def evaluate_extra_row_numeric(
 
     extra_block_sym = extra_row_sym[:, c0:c1]
 
-    # Evaluate numerically
+    # Evaluate numerically, extending the symbol map if new symbols appear
+    # in the extra row that were not present in the base blocks.
     extra_row_A_block = np.zeros((1, e_star), dtype=float)
     for j in range(e_star):
         expr = extra_block_sym[0, j]
-        extra_row_A_block[0, j] = float(expr.subs(symbol_values))
+        expr_sub = expr.subs(symbol_values)
+        # If any symbols remain, assign them new random nonzero values
+        if hasattr(expr_sub, "free_symbols") and expr_sub.free_symbols:
+            eps = 1e-2
+            for sym in expr_sub.free_symbols:
+                if sym not in symbol_values:
+                    symbol_values[sym] = float(
+                        np.random.rand() * (1.0 - eps) + eps
+                    )
+            expr_sub = expr.subs(symbol_values)
+        extra_row_A_block[0, j] = float(expr_sub)
 
     # Get b-entry
     b_expr = det_computer.calculator.build_matrix_entry(
@@ -533,10 +551,20 @@ def evaluate_extra_row_numeric(
     )
     # b_expr might be a concrete value (int/float) or symbolic
     if isinstance(b_expr, (int, float)):
-        extra_row_b = float(b_expr)
+        extra_row_b_expr = float(b_expr)
     else:
-        extra_row_b = float(b_expr.subs(symbol_values))
-    return extra_row_A_block, extra_row_b
+        b_sub = b_expr.subs(symbol_values)
+        if hasattr(b_sub, "free_symbols") and b_sub.free_symbols:
+            eps = 1e-2
+            for sym in b_sub.free_symbols:
+                if sym not in symbol_values:
+                    symbol_values[sym] = float(
+                        np.random.rand() * (1.0 - eps) + eps
+                    )
+            b_sub = b_expr.subs(symbol_values)
+        extra_row_b_expr = float(b_sub)
+
+    return extra_row_A_block, extra_row_b_expr
 
 
 def numeric_minor_from_characteristic_tuples(
@@ -760,8 +788,20 @@ def evaluate_symbolic_fast_minor_from_characteristic_tuples(
     g, v, s = row
     minor_symbolic = det_computer.compute_minor_fast(g, v, s)
 
-    # Evaluate the symbolic minor under the provided assignment.
+    # Evaluate the symbolic minor under the provided assignment. If new symbols
+    # appear that were not part of the base-block extraction, extend the map
+    # while preserving existing assignments.
     minor_eval_expr = minor_symbolic.subs(symbol_values)
+    if hasattr(minor_eval_expr, "free_symbols") and minor_eval_expr.free_symbols:
+        import numpy as np
+        eps = 1e-2
+        for sym in minor_eval_expr.free_symbols:
+            if sym not in symbol_values:
+                symbol_values[sym] = float(
+                    np.random.rand() * (1.0 - eps) + eps
+                )
+        minor_eval_expr = minor_symbolic.subs(symbol_values)
+
     minor_symbolic_eval = float(minor_eval_expr)
 
     return {
