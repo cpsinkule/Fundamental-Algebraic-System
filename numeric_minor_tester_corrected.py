@@ -12,8 +12,11 @@ verify the algorithmic correctness independent of symbolic complexity.
 """
 
 import numpy as np
-from typing import List, Tuple, Dict, Optional, Union
+from typing import List, Tuple, Dict, Optional, Union, Any
 import sympy as sp
+
+from fas_minor_calculator import FASMinorCalculator
+from determinant_computer import DeterminantComputer
 
 
 class NumericMinorTester:
@@ -417,8 +420,16 @@ def extract_numeric_blocks_from_symbolic(
                     for j in range(A_block_sym.shape[1]):
                         all_symbols.update(A_block_sym[i, j].free_symbols)
 
-        # Create random assignments
-        symbol_values = {sym: np.random.rand() for sym in all_symbols}
+        # Create random assignments in (0, 1] to avoid zeros
+        # and extremely tiny values that might spuriously introduce singularities.
+        if all_symbols:
+            eps = 1e-2
+            symbol_values = {
+                sym: float(np.random.rand() * (1.0 - eps) + eps)
+                for sym in all_symbols
+            }
+        else:
+            symbol_values = {}
 
     # Extract component structure info
     component_edge_sizes = dict(det_computer._comp_edge_sizes)
@@ -525,5 +536,236 @@ def evaluate_extra_row_numeric(
         extra_row_b = float(b_expr)
     else:
         extra_row_b = float(b_expr.subs(symbol_values))
-
     return extra_row_A_block, extra_row_b
+
+
+def numeric_minor_from_characteristic_tuples(
+    char_tuples: List[Tuple[int, ...]],
+    row: Tuple[int, int, int],
+    *,
+    symbol_values: Optional[Dict[sp.Symbol, float]] = None,
+    random_seed: int = 42,
+) -> Tuple[float, NumericMinorTester, Dict[sp.Symbol, float]]:
+    """
+    One-shot helper: start from characteristic tuples and a row, construct
+    the symbolic pipeline up to the cached base blocks, then map all symbols
+    to numeric values and evaluate the fast minor numerically.
+
+    This mirrors DeterminantComputer.minor_from_characteristic_tuples up to
+    the point where the symbolic fast minor would be computed, but instead
+    uses NumericMinorTester with numeric substitutions.
+
+    Parameters
+    ----------
+    char_tuples : List[Tuple[int, ...]]
+        Per-component characteristic tuples used to construct the calculator.
+    row : Tuple[int, int, int]
+        Extra row specification (graph_idx, vertex, layer).
+    symbol_values : Dict[sp.Symbol, float], optional
+        Optional pre-specified mapping from symbols to numeric values. If
+        None, a random nonzero assignment will be generated.
+    random_seed : int, optional
+        Seed for the random symbol assignment when symbol_values is None.
+
+    Returns
+    -------
+    minor_numeric : float
+        Numerically evaluated minor for the given row.
+    tester : NumericMinorTester
+        The numeric tester instance constructed from the substituted blocks.
+    symbol_values : Dict[sp.Symbol, float]
+        The concrete symbol-to-float mapping used for this evaluation.
+    """
+    # Construct symbolic calculator and determinant computer, as in the
+    # symbolic one-shot helpers.
+    calc = FASMinorCalculator.from_characteristic_tuples(
+        char_tuples,
+        use_symbolic=True
+    )
+    det_computer = DeterminantComputer(calc)
+
+    # Build numeric blocks from the symbolic cache, generating a nonzero
+    # symbol assignment if one is not provided.
+    tester, symbol_values = extract_numeric_blocks_from_symbolic(
+        det_computer,
+        symbol_values=symbol_values,
+        random_seed=random_seed,
+        return_symbol_values=True,
+    )
+
+    # Evaluate the extra row numerically under the same symbol assignment.
+    extra_row_A_block, extra_row_b = evaluate_extra_row_numeric(
+        det_computer,
+        row,
+        symbol_values,
+    )
+
+    graph_idx, _, _ = row
+    minor_numeric = tester.compute_fast_minor_numeric(
+        graph_idx,
+        extra_row_A_block,
+        extra_row_b,
+    )
+    return minor_numeric, tester, symbol_values
+
+
+def compare_numeric_minor_methods_from_characteristic_tuples(
+    char_tuples: List[Tuple[int, ...]],
+    row: Tuple[int, int, int],
+    *,
+    symbol_values: Optional[Dict[sp.Symbol, float]] = None,
+    random_seed: int = 42,
+) -> Dict[str, Any]:
+    """
+    One-shot tester: compare the fast numeric minor algorithm against a direct
+    numeric determinant computed from the full [A|b] matrix.
+
+    This uses the same symbolic pipeline as DeterminantComputer and the same
+    symbol-to-float mapping for both methods.
+
+    Parameters
+    ----------
+    char_tuples : List[Tuple[int, ...]]
+        Per-component characteristic tuples used to construct the calculator.
+    row : Tuple[int, int, int]
+        Extra row specification (graph_idx, vertex, layer).
+    symbol_values : Dict[sp.Symbol, float], optional
+        Optional pre-specified mapping from symbols to numeric values. If
+        None, a random nonzero assignment will be generated.
+    random_seed : int, optional
+        Seed for the random symbol assignment when symbol_values is None.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - 'minor_fast': float, fast block-structured numeric minor
+        - 'minor_direct': float, direct numeric determinant via numpy.linalg.det
+        - 'abs_error': float, absolute difference |fast - direct|
+        - 'symbol_values': Dict[sp.Symbol, float], the assignment used
+    """
+    # Construct symbolic calculator and determinant computer.
+    calc = FASMinorCalculator.from_characteristic_tuples(
+        char_tuples,
+        use_symbolic=True
+    )
+    det_computer = DeterminantComputer(calc)
+
+    # Build numeric blocks and tester from the symbolic cache.
+    tester, symbol_values = extract_numeric_blocks_from_symbolic(
+        det_computer,
+        symbol_values=symbol_values,
+        random_seed=random_seed,
+        return_symbol_values=True,
+    )
+
+    # Evaluate the extra row numerically under the same symbol assignment.
+    extra_row_A_block, extra_row_b = evaluate_extra_row_numeric(
+        det_computer,
+        row,
+        symbol_values,
+    )
+
+    graph_idx, _, _ = row
+    minor_fast = tester.compute_fast_minor_numeric(
+        graph_idx,
+        extra_row_A_block,
+        extra_row_b,
+    )
+
+    # Assemble the full numeric [A|b] matrix for base rows + extra row.
+    all_rows = det_computer.base_rows + [row]
+
+    # Use shape of the first row to size the matrix.
+    first_row_sym = calc.get_row(*all_rows[0])
+    ncols = first_row_sym.shape[1]
+    nrows = len(all_rows)
+    full_matrix = np.zeros((nrows, ncols), dtype=float)
+
+    for i, row_spec in enumerate(all_rows):
+        row_sym = calc.get_row(*row_spec)
+        # Substitute symbol values once per row for efficiency.
+        row_eval = row_sym.subs(symbol_values)
+        for j in range(ncols):
+            entry = row_eval[0, j]
+            if isinstance(entry, (int, float)):
+                full_matrix[i, j] = float(entry)
+            else:
+                full_matrix[i, j] = float(entry)
+
+    minor_direct = float(np.linalg.det(full_matrix))
+
+    return {
+        "minor_fast": minor_fast,
+        "minor_direct": minor_direct,
+        "abs_error": abs(minor_fast - minor_direct),
+        "symbol_values": symbol_values,
+    }
+
+
+def evaluate_symbolic_fast_minor_from_characteristic_tuples(
+    char_tuples: List[Tuple[int, ...]],
+    row: Tuple[int, int, int],
+    *,
+    symbol_values: Optional[Dict[sp.Symbol, float]] = None,
+    random_seed: int = 42,
+) -> Dict[str, Any]:
+    """
+    One-shot helper: compute the fast minor symbolically and then evaluate it
+    numerically using a given symbol-to-float map.
+
+    This uses DeterminantComputer.compute_minor_fast for the symbolic minor,
+    and then substitutes the same symbol mapping that drives the numeric tests.
+
+    Parameters
+    ----------
+    char_tuples : List[Tuple[int, ...]]
+        Per-component characteristic tuples used to construct the calculator.
+    row : Tuple[int, int, int]
+        Extra row specification (graph_idx, vertex, layer).
+    symbol_values : Dict[sp.Symbol, float], optional
+        Optional pre-specified mapping from symbols to numeric values. To
+        guarantee consistency with the numeric one-shots, pass in the
+        'symbol_values' dict returned by numeric_minor_from_characteristic_tuples
+        or compare_numeric_minor_methods_from_characteristic_tuples. If None,
+        a random nonzero assignment will be generated.
+    random_seed : int, optional
+        Seed for the random symbol assignment when symbol_values is None.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing:
+        - 'minor_symbolic': sp.Expr, the full symbolic fast minor
+        - 'minor_symbolic_eval': float, numeric value after substitution
+        - 'symbol_values': Dict[sp.Symbol, float], the assignment used
+    """
+    # Construct symbolic calculator and determinant computer.
+    calc = FASMinorCalculator.from_characteristic_tuples(
+        char_tuples,
+        use_symbolic=True
+    )
+    det_computer = DeterminantComputer(calc)
+
+    # If no symbol map is provided, generate one in the same way as the
+    # numeric tester does, so the set of symbols and their ranges match.
+    if symbol_values is None:
+        _, symbol_values = extract_numeric_blocks_from_symbolic(
+            det_computer,
+            symbol_values=None,
+            random_seed=random_seed,
+            return_symbol_values=True,
+        )
+
+    g, v, s = row
+    minor_symbolic = det_computer.compute_minor_fast(g, v, s)
+
+    # Evaluate the symbolic minor under the provided assignment.
+    minor_eval_expr = minor_symbolic.subs(symbol_values)
+    minor_symbolic_eval = float(minor_eval_expr)
+
+    return {
+        "minor_symbolic": minor_symbolic,
+        "minor_symbolic_eval": minor_symbolic_eval,
+        "symbol_values": symbol_values,
+    }
