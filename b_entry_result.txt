@@ -1,0 +1,96 @@
+================================================================================
+CALCULATION RESULT: b entry for (0,0,1) with system (5,2,9)+(3,1,5)
+================================================================================
+
+Configuration:
+- Component 0: characteristic tuple (5,2,9) → 9 vertices, 7 edges
+- Component 1: characteristic tuple (3,1,5) → 5 vertices, 4 edges
+- Requested entry: b^1_{0,0} (graph_idx=0, vertex=0, layer=1)
+
+Formula Used (Equation 6.4 from thesis):
+b¹_v = Σ_{l,w ∈ V(Γ), C(l)≠C(v)} (α(v)² - α(l)²) c^l_{w,v} u_w u_l
+
+where:
+- v = vertex 0 in component 0
+- l ranges over vertices in component 1 (different component)
+- w ranges over all vertices in all components
+- c^l_{w,v} are Type 3 structure functions (vertex superscripts)
+
+================================================================================
+SYMBOLIC RESULT (Simplified):
+================================================================================
+
+b^1_{0,0} = (α₀² - α₁²) × [sum of 25 terms]
+
+where the sum contains all combinations of:
+  c^{(1,l)}_{(1,w),(0,0)} × u_{1,w} × u_{1,l}
+
+with l ∈ {0, 1, 2, 3, 4} (vertices in component 1)
+and w ∈ {0, 1, 2, 3, 4} (vertices in component 1)
+
+================================================================================
+EXPANDED FORM:
+================================================================================
+
+b^1_{0,0} = (α₀² - α₁²) × (
+    c^{(1,0)}_{(1,0),(0,0)} u_{1,0}²
+  + c^{(1,0)}_{(1,1),(0,0)} u_{1,0} u_{1,1}
+  + c^{(1,0)}_{(1,2),(0,0)} u_{1,0} u_{1,2}
+  + c^{(1,0)}_{(1,3),(0,0)} u_{1,0} u_{1,3}
+  + c^{(1,0)}_{(1,4),(0,0)} u_{1,0} u_{1,4}
+  + c^{(1,1)}_{(1,0),(0,0)} u_{1,0} u_{1,1}
+  + c^{(1,1)}_{(1,1),(0,0)} u_{1,1}²
+  + c^{(1,1)}_{(1,2),(0,0)} u_{1,1} u_{1,2}
+  + c^{(1,1)}_{(1,3),(0,0)} u_{1,1} u_{1,3}
+  + c^{(1,1)}_{(1,4),(0,0)} u_{1,1} u_{1,4}
+  + c^{(1,2)}_{(1,0),(0,0)} u_{1,0} u_{1,2}
+  + c^{(1,2)}_{(1,1),(0,0)} u_{1,1} u_{1,2}
+  + c^{(1,2)}_{(1,2),(0,0)} u_{1,2}²
+  + c^{(1,2)}_{(1,3),(0,0)} u_{1,2} u_{1,3}
+  + c^{(1,2)}_{(1,4),(0,0)} u_{1,2} u_{1,4}
+  + c^{(1,3)}_{(1,0),(0,0)} u_{1,0} u_{1,3}
+  + c^{(1,3)}_{(1,1),(0,0)} u_{1,1} u_{1,3}
+  + c^{(1,3)}_{(1,2),(0,0)} u_{1,2} u_{1,3}
+  + c^{(1,3)}_{(1,3),(0,0)} u_{1,3}²
+  + c^{(1,3)}_{(1,4),(0,0)} u_{1,3} u_{1,4}
+  + c^{(1,4)}_{(1,0),(0,0)} u_{1,0} u_{1,4}
+  + c^{(1,4)}_{(1,1),(0,0)} u_{1,1} u_{1,4}
+  + c^{(1,4)}_{(1,2),(0,0)} u_{1,2} u_{1,4}
+  + c^{(1,4)}_{(1,3),(0,0)} u_{1,3} u_{1,4}
+  + c^{(1,4)}_{(1,4),(0,0)} u_{1,4}²
+)
+
+================================================================================
+KEY OBSERVATIONS:
+================================================================================
+
+1. The result is NON-ZERO (unlike many other b entries which are often zero)
+
+2. Total number of terms: 25 = 5×5 (all pairs of vertices from component 1)
+
+3. Structure:
+   - Overall factor: (α₀² - α₁²)
+     where α₀ is the parameter for component 0
+     and α₁ is the parameter for component 1
+
+   - Each term involves:
+     * A Type 3 structure function c^{(1,l)}_{(1,w),(0,0)}
+     * Two vertex variables from component 1: u_{1,w} and u_{1,l}
+
+4. Degree: All terms are degree 2 in vertex variables (as required for b vector)
+
+5. Component interaction: The b entry depends on vertices from component 1 only,
+   because the sum is over vertices l where C(l) ≠ C(v), i.e., l is from a
+   different component than v (v is from component 0)
+
+================================================================================
+LATEX REPRESENTATION:
+================================================================================
+
+b^1_{0,0} = (α₀² - α₁²) (
+  c^{(1,0)}_{(1,0),(0,0)} u_{1,0}² + c^{(1,0)}_{(1,1),(0,0)} u_{1,0} u_{1,1} + ...
+)
+
+[Full LaTeX expression available in calculation output]
+
+================================================================================
