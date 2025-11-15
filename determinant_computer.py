@@ -33,7 +33,7 @@ Usage Example:
 """
 
 import sympy as sp
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any, Optional, Union
 from fas_minor_calculator import FASMinorCalculator
 
 # Optional import for display functionality
@@ -349,6 +349,22 @@ class DeterminantComputer:
         Returns:
         - SymPy expression for the determinant (minor)
         """
+        # Validate inputs
+        if not isinstance(graph_idx, int) or graph_idx < 0 or graph_idx >= len(self.calculator.graphs):
+            raise ValueError(f"Invalid graph_idx {graph_idx} (must be 0-{len(self.calculator.graphs)-1})")
+        if not isinstance(vertex, int) or vertex < 0:
+            raise ValueError(f"vertex must be a non-negative integer (got {vertex})")
+        if not isinstance(layer, int) or layer < 1:
+            raise ValueError(f"layer must be a positive integer >= 1 (got {layer})")
+
+        # Validate vertex exists in the specified graph
+        graph = self.calculator.graphs[graph_idx]
+        if vertex not in graph.vertices:
+            raise ValueError(
+                f"vertex {vertex} does not exist in graph {graph_idx} "
+                f"(valid vertices: {sorted(graph.vertices)})"
+            )
+
         # Assemble row list in the same order as compute_minor: base + user
         user_row = (graph_idx, vertex, layer)
         all_rows = self.base_rows + [user_row]
@@ -439,7 +455,7 @@ class DeterminantComputer:
         layer: int,
         return_mapping: bool = False,
         simplify: bool = False,
-    ) -> sp.Matrix:
+    ) -> Union[sp.Matrix, Tuple[sp.Matrix, List[Tuple[int, int, int]]]]:
         """
         Compute the theoretically significant y-vector from the adjugate system.
 
@@ -486,13 +502,21 @@ class DeterminantComputer:
             Local vertex label within that component
         layer : int
             Layer number s >= 1
+        return_mapping : bool, optional
+            If True, return tuple (y, mapping) where mapping is the list of base
+            row specs for this component. Default is False.
+        simplify : bool, optional
+            If True, apply sp.cancel to y entries for readability. Default is False.
 
         Returns:
         --------
-        sp.Matrix
-            Column vector (shape e_star × 1) where e_star is the number of edges
-            in the specified component. Each entry y[i] corresponds to the i-th
-            base row from this component.
+        sp.Matrix or Tuple[sp.Matrix, List[Tuple[int, int, int]]]
+            If return_mapping is False: Column vector (shape e_star × 1) where
+            e_star is the number of edges in the specified component. Each entry
+            y[i] corresponds to the i-th base row from this component.
+
+            If return_mapping is True: Tuple (y, mapping) where y is the column
+            vector and mapping is the list of base row specifications in order.
 
         Raises:
         -------
@@ -526,8 +550,18 @@ class DeterminantComputer:
         # Validate inputs (similar to compute_minor_fast)
         if not isinstance(graph_idx, int) or graph_idx < 0 or graph_idx >= len(self.calculator.graphs):
             raise ValueError(f"Invalid graph_idx {graph_idx} (must be 0-{len(self.calculator.graphs)-1})")
+        if not isinstance(vertex, int) or vertex < 0:
+            raise ValueError(f"vertex must be a non-negative integer (got {vertex})")
         if not isinstance(layer, int) or layer < 1:
             raise ValueError(f"layer must be a positive integer >= 1 (got {layer})")
+
+        # Validate vertex exists in the specified graph
+        graph = self.calculator.graphs[graph_idx]
+        if vertex not in graph.vertices:
+            raise ValueError(
+                f"vertex {vertex} does not exist in graph {graph_idx} "
+                f"(valid vertices: {sorted(graph.vertices)})"
+            )
 
         user_row = (graph_idx, vertex, layer)
 

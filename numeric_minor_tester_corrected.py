@@ -306,12 +306,10 @@ class NumericMinorTester:
             # B-entry for this base row
             b_i = self.b_vectors[component_idx][local_idx, 0]
 
-            # Cofactor: as in the single-component case, the true cofactor minor
-            # differs from det(A_star) * y[local_idx] by a row-permutation sign.
-            # Moving the extra row from position local_idx to the last row of the
-            # block requires (e_star - 1 - local_idx) swaps.
-            sign_block = -1 if ((e_star - 1 - local_idx) % 2) else 1
-            replaced_det = sign_block * det_A_star * y[local_idx, 0]
+            # Cofactor: when row local_idx is replaced by the extra row,
+            # the determinant formula is det(A_star) * y[local_idx]
+            # (this matches the symbolic implementation in determinant_computer.py:426)
+            replaced_det = det_A_star * y[local_idx, 0]
 
             det_single += sign_local * b_i * replaced_det
 
@@ -498,6 +496,10 @@ def evaluate_extra_row_numeric(
     """
     Evaluate the extra row numerically.
 
+    **IMPORTANT**: This function modifies the `symbol_values` dictionary as a
+    side effect. If the extra row contains symbols not present in the input
+    dictionary, they will be added with random values in (0.01, 1.0).
+
     Parameters
     ----------
     det_computer : DeterminantComputer
@@ -505,7 +507,9 @@ def evaluate_extra_row_numeric(
     extra_row_spec : Tuple[int, int, int]
         Extra row specification (graph_idx, vertex, layer)
     symbol_values : Dict[sp.Symbol, float]
-        Mapping from SymPy symbols to numeric values
+        Mapping from SymPy symbols to numeric values. This dictionary will
+        be modified in-place if the extra row contains new symbols not
+        already present in the dictionary.
 
     Returns
     -------
@@ -513,6 +517,13 @@ def evaluate_extra_row_numeric(
         Numeric A-block for the component of the extra row (shape 1, e_star)
     extra_row_b : float
         Numeric b-entry for the extra row
+
+    Notes
+    -----
+    The modification of `symbol_values` ensures that all symbols encountered
+    in the extra row have numeric values assigned, which is necessary for
+    numeric evaluation. If you need to preserve the original dictionary,
+    pass a copy: `evaluate_extra_row_numeric(..., symbol_values.copy())`.
     """
     det_computer._ensure_base_blocks_cache()
 

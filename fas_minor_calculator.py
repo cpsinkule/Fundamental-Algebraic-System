@@ -981,16 +981,26 @@ class FASMinorCalculator:
             return expr
 
         # Try to get expanded expression from cache
-        # Use hash of expression as cache key
+        # Use hash of expression as cache key (with verification to prevent hash collision bugs)
         expr_hash = hash(expr)
         if expr_hash in self._expanded_expr_cache:
-            expanded = self._expanded_expr_cache[expr_hash]
+            cached_expr, expanded = self._expanded_expr_cache[expr_hash]
+            # Verify no hash collision: check that cached expression equals input
+            if cached_expr == expr:
+                # Cache hit with verified match
+                pass
+            else:
+                # Hash collision detected - recompute
+                expanded = sp.expand(expr)
+                # Update cache with correct entry
+                if len(self._expanded_expr_cache) < 1000:
+                    self._expanded_expr_cache[expr_hash] = (expr, expanded)
         else:
             # Expand the expression and cache it
             expanded = sp.expand(expr)
             # Only cache if not too many entries (prevent unbounded memory growth)
             if len(self._expanded_expr_cache) < 1000:
-                self._expanded_expr_cache[expr_hash] = expanded
+                self._expanded_expr_cache[expr_hash] = (expr, expanded)
 
         # Extract terms with target vertex degree
         if expanded.is_Add:
@@ -1063,8 +1073,10 @@ class FASMinorCalculator:
         # sp.cancel() is much faster than sp.simplify() for rational expressions
         try:
             return sp.cancel(expr)
-        except:
-            # If cancel fails, return original expression
+        except (sp.PolynomialError, ZeroDivisionError, AttributeError, TypeError) as e:
+            # If cancel fails (e.g., non-polynomial, division issues), return original
+            if self.show_performance_warnings:
+                print(f"Warning: Simplification failed ({type(e).__name__}). Using original expression.")
             return expr
 
     def build_matrix_entry(self, row_spec: Tuple[int, int, int],
