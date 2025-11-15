@@ -701,25 +701,44 @@ def compare_numeric_minor_methods_from_characteristic_tuples(
         extra_row_b,
     )
 
-    # Assemble the full numeric [A|b] matrix for base rows + extra row.
-    all_rows = det_computer.base_rows + [row]
+    # Assemble the full numeric [A|b] matrix for base rows + extra row, using
+    # the already-evaluated numeric A-blocks and b-vectors to avoid additional
+    # symbolic work.
+    base_rows = det_computer.base_rows
+    n_base = len(base_rows)
 
-    # Use shape of the first row to size the matrix.
-    first_row_sym = calc.get_row(*all_rows[0])
-    ncols = first_row_sym.shape[1]
-    nrows = len(all_rows)
+    component_edge_sizes = tester.component_edge_sizes
+    component_edge_starts = tester.component_edge_starts
+    total_edges = sum(component_edge_sizes.values())
+
+    nrows = n_base + 1
+    ncols = total_edges + 1  # +1 for b column
     full_matrix = np.zeros((nrows, ncols), dtype=float)
 
-    for i, row_spec in enumerate(all_rows):
-        row_sym = calc.get_row(*row_spec)
-        # Substitute symbol values once per row for efficiency.
-        row_eval = row_sym.subs(symbol_values)
-        for j in range(ncols):
-            entry = row_eval[0, j]
-            if isinstance(entry, (int, float)):
-                full_matrix[i, j] = float(entry)
-            else:
-                full_matrix[i, j] = float(entry)
+    # Build mapping from row_spec to local index within each component block.
+    index_in_comp: Dict[int, Dict[Tuple[int, int, int], int]] = {}
+    for comp_idx, rows_list in tester.base_rows_by_comp.items():
+        index_in_comp[comp_idx] = {r: i for i, r in enumerate(rows_list)}
+
+    # Fill base rows.
+    for global_idx, row_spec in enumerate(base_rows):
+        comp_idx = row_spec[0]
+        local_idx = index_in_comp[comp_idx][row_spec]
+        c0 = component_edge_starts[comp_idx]
+        e_h = component_edge_sizes[comp_idx]
+
+        # A-block columns for this component; other components are zero.
+        full_matrix[global_idx, c0:c0 + e_h] = tester.A_blocks[comp_idx][local_idx, :]
+
+        # b column.
+        full_matrix[global_idx, total_edges] = tester.b_vectors[comp_idx][local_idx, 0]
+
+    # Fill extra row at the bottom: zeros everywhere except its component slice and b.
+    extra_row_idx = n_base
+    c0_extra = component_edge_starts[graph_idx]
+    e_star = component_edge_sizes[graph_idx]
+    full_matrix[extra_row_idx, c0_extra:c0_extra + e_star] = extra_row_A_block[0, :]
+    full_matrix[extra_row_idx, total_edges] = extra_row_b
 
     minor_direct = float(np.linalg.det(full_matrix))
 
