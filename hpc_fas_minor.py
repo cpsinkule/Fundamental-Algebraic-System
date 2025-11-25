@@ -583,52 +583,19 @@ class DeterminantComputer:
     def compute_minor_fast(self, graph_idx: int, vertex: int, layer: int) -> sp.Expr:
         user_row = (graph_idx, vertex, layer)
         all_rows = self.base_rows + [user_row]
-        self._ensure_base_blocks_cache()
-        comp_edge_starts = self._comp_edge_starts
-        comp_edge_sizes = self._comp_edge_sizes
-        base_rows_by_comp = self._base_rows_by_comp
-        A_block_by_comp = self._A_block_by_comp
-        det_base_by_comp = self._det_base_by_comp
 
-        total_edges = sum(comp_edge_sizes.values())
-        ncols = total_edges + 1
-        prod_other = sp.Integer(1)
-        for h in det_base_by_comp:
-            if h != graph_idx:
-                prod_other *= det_base_by_comp[h]
-        A_star = A_block_by_comp[graph_idx]
-        e_star = comp_edge_sizes[graph_idx]
-        if e_star == 0:
-            raise ValueError("Component of extra row has zero edges; cannot form minor.")
-        det_A_star = det_base_by_comp[graph_idx]
+        # Build full matrix: one row per (base_rows + extra), all columns (edges + b)
+        rows_list = []
+        for row_spec in all_rows:
+            row = self.calculator.get_row(*row_spec)
+            rows_list.append(row)
 
-        extra_full_row = self.calculator.get_row(*user_row)
-        c0s = comp_edge_starts[graph_idx]
-        c1s = c0s + e_star
-        extra_block = extra_full_row[:, c0s:c1s]
-        y = A_star.T.LUsolve(extra_block.T)
-        # Cancel rational expressions in y to simplify before use
-        y = y.applyfunc(sp.cancel)
+        full_matrix = rows_list[0]
+        for r in rows_list[1:]:
+            full_matrix = full_matrix.col_join(r)
 
-        comp_rows_star = base_rows_by_comp[graph_idx]
-        index_in_star = {r: i for i, r in enumerate(comp_rows_star)}
-
-        det_total = sp.Integer(0)
-        for i_global, r in enumerate(all_rows):
-            if r[0] != graph_idx:
-                continue
-            sign = -1 if ((i_global + 1 + ncols) % 2) else 1
-            b_i = self.calculator.build_matrix_entry(r, ('b', None, None))
-            if r == user_row:
-                minor_det = prod_other * det_A_star
-            else:
-                idx = index_in_star[r]
-                replaced_det = det_A_star * y[idx, 0]
-                minor_det = prod_other * replaced_det
-            det_total += sign * b_i * minor_det
-        # Cancel any remaining rational expressions before returning
-        det_total = sp.cancel(det_total)
-        return det_total
+        # Use SymPy's built-in determinant (berkowitz is division-free)
+        return full_matrix.det(method='berkowitz')
 
     def compute_y_vector(self, graph_idx: int, vertex: int, layer: int) -> sp.Matrix:
         self._ensure_base_blocks_cache()
@@ -761,66 +728,17 @@ class DeterminantComputer:
         """
         Exact residual polynomial after factoring global p from the minor using Poly.
 
-        Computes E = det(A_base) * S without textual expansion, then applies Poly
-        to extract the p-divides residual to account for cross-terms between det(A_base)
-        and S.
+        Computes the minor via direct determinant, then extracts the p-divides residual.
         """
-        # Ensure caches
-        self._ensure_base_blocks_cache()
-        comp_edge_sizes = self._comp_edge_sizes
-        base_rows_by_comp = self._base_rows_by_comp
-        det_base_by_comp = self._det_base_by_comp
+        # Compute the minor using direct determinant
+        minor = self.compute_minor_fast(graph_idx, vertex, layer)
 
-        # Prepare S components
-        user_row = (graph_idx, vertex, layer)
-        all_rows = self.base_rows + [user_row]
-        total_edges = sum(comp_edge_sizes.values())
-        ncols = total_edges + 1
-
-        # y from A_star^T y = extra_block^T
-        A_star = self._A_block_by_comp[graph_idx]
-        e_star = comp_edge_sizes[graph_idx]
-        if e_star == 0:
-            raise ValueError("Component of extra row has zero edges; cannot form minor.")
-        extra_full_row = self.calculator.get_row(*user_row)
-        c0s = self._comp_edge_starts[graph_idx]
-        extra_block = extra_full_row[:, c0s:c0s + e_star]
-        y = A_star.T.LUsolve(extra_block.T)
-        # Cancel rational expressions in y to simplify before use
-        y = y.applyfunc(sp.cancel)
-
-        comp_rows_star = base_rows_by_comp[graph_idx]
-        index_in_star = {r: i for i, r in enumerate(comp_rows_star)}
-
-        # Bracket sum S over component graph_idx and the user row
-        S = sp.Integer(0)
-        for i_global, r in enumerate(all_rows):
-            if r[0] != graph_idx:
-                continue
-            sign = -1 if ((i_global + 1 + ncols) % 2) else 1
-            b_i = self.calculator.build_matrix_entry(r, ('b', None, None))
-            if r == user_row:
-                t_i = 1
-            else:
-                idx = index_in_star[r]
-                t_i = y[idx, 0]
-            S += sign * b_i * t_i
-
-        # det(A_base)
-        det_base = sp.Integer(1)
-        for det_val in det_base_by_comp.values():
-            det_base *= det_val
-
-        E = det_base * S
         if expand:
-            E = sp.expand(E)
-
-        # Cancel rational expressions before passing to Poly
-        E = sp.cancel(E)
+            minor = sp.expand(minor)
 
         # Poly-based divides residual of p
         p_spec = self.base_A_root_product_spec()
-        return self.coeff_of_monomial(E, p_spec, match='divides')
+        return self.coeff_of_monomial(minor, p_spec, match='divides')
 
 
 # ----------------------------------- CLI -------------------------------------

@@ -8,7 +8,8 @@
       "Bash(python:*)",
       "Bash(python3:*)",
       "Bash(cat:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(pip3 list:*)"
     ],
     "deny": [],
     "ask": []
