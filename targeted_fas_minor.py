@@ -934,6 +934,54 @@ def compute_p_coefficient(
     return compute_monomial_coefficient(char_tuples, extra_row, p_spec, match=match)
 
 
+def compute_minor_with_p_vars(
+    char_tuples: List[Tuple[int, ...]],
+    extra_row: Tuple[int, int, int],
+    additional_vars: Optional[List[Tuple]] = None,
+) -> sp.Expr:
+    """
+    Compute minor keeping only variables in p plus user-specified additional variables.
+
+    All other variables are set to 0 during row construction. This is useful
+    when searching for monomials that contain p as a factor.
+
+    Args:
+        char_tuples: List of characteristic tuples
+        extra_row: (graph_idx, vertex, layer) for the extra row
+        additional_vars: List of variable keys beyond p to keep, e.g.,
+                         [('edge', 0, (1, 2)), ('vertex', 1, 3)]
+                         If None, only p variables are kept.
+
+    Returns:
+        SymPy expression for the minor (with non-target variables zeroed).
+
+    Example:
+        >>> minor = compute_minor_with_p_vars(
+        ...     [(2,1,4), (2,1,3)],
+        ...     (0, 0, 1),
+        ...     [('edge', 0, (1, 2))]
+        ... )
+    """
+    # Get p_spec to extract variable keys
+    temp_calc = FASMinorCalculator.from_characteristic_tuples(char_tuples)
+    temp_det = DeterminantComputer(temp_calc)
+    p_spec = temp_det.base_A_root_product_spec()
+
+    # Build combined spec: p vars + additional vars (all with exponent 1)
+    combined_spec: Dict[Tuple, int] = {key: 1 for key in p_spec.keys()}
+    if additional_vars:
+        for var_key in additional_vars:
+            combined_spec[var_key] = 1
+
+    # Compute minor with targeted zeroing
+    calc = FASMinorCalculator.from_characteristic_tuples(
+        char_tuples,
+        target_monomial_spec=combined_spec,
+    )
+    det_comp = DeterminantComputer(calc)
+    return det_comp.compute_minor_fast(*extra_row)
+
+
 # --------------------------------- Parsers ------------------------------------
 def _parse_tuples(s: str) -> List[Tuple[int, ...]]:
     """Parse characteristic tuples from semicolon-separated format.
@@ -1110,6 +1158,9 @@ Monomial format:
     ap.add_argument("--coeff-p-divides", action="store_true",
                     help="Legacy: compute p-divides residual without targeted zeroing")
     ap.add_argument("--expand", action="store_true", help="Expand minor before coefficient extraction")
+    ap.add_argument("--with-p", action="store_true",
+                    help="Keep p (root product) variables plus any --monomial variables; "
+                         "zero all others")
     args = ap.parse_args()
 
     # Parse characteristic tuples
@@ -1146,6 +1197,22 @@ Monomial format:
         # Default to 'divides' mode for p coefficient
         if args.coeff_mode == 'exact':
             args.coeff_mode = 'divides'
+
+    # Handle --with-p: keep p variables plus any --monomial variables
+    if args.with_p:
+        if args.coeff_p:
+            ap.error("Cannot specify both --with-p and --coeff-p")
+        # Get p variables
+        temp_calc = FASMinorCalculator.from_characteristic_tuples(char_tuples)
+        temp_det = DeterminantComputer(temp_calc)
+        p_spec = temp_det.base_A_root_product_spec()
+
+        # Combine p vars with user's additional vars (all exponent 1)
+        combined_spec = {key: 1 for key in p_spec.keys()}
+        if monomial_spec:
+            for key in monomial_spec.keys():
+                combined_spec[key] = 1
+        monomial_spec = combined_spec
 
     # Create calculator (with monomial targeting if specified)
     calc = FASMinorCalculator.from_characteristic_tuples(
