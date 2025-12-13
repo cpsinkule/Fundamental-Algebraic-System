@@ -716,6 +716,10 @@ class DeterminantComputer:
         )
         return [sym for _, sym in verts] + [sym for _, sym in edges]
 
+    def get_u_gens(self) -> List[sp.Symbol]:
+        """Public accessor for the u-variable generators used in Poly."""
+        return self._get_u_gens()
+
     def _build_monomial_from_spec(self, monomial_spec: Dict[Any, int]) -> sp.Expr:
         mono = sp.Integer(1)
         for key, exp in monomial_spec.items():
@@ -938,7 +942,9 @@ def compute_minor_with_p_vars(
     char_tuples: List[Tuple[int, ...]],
     extra_row: Tuple[int, int, int],
     additional_vars: Optional[List[Tuple]] = None,
-) -> sp.Expr:
+    *,
+    return_u_gens: bool = False,
+) -> sp.Expr | Tuple[sp.Expr, List[sp.Symbol]]:
     """
     Compute minor keeping only variables in p plus user-specified additional variables.
 
@@ -951,9 +957,13 @@ def compute_minor_with_p_vars(
         additional_vars: List of variable keys beyond p to keep, e.g.,
                          [('edge', 0, (1, 2)), ('vertex', 1, 3)]
                          If None, only p variables are kept.
+        return_u_gens: If True, also return the ordered list of u-variables
+                       (generators) corresponding to p-vars plus additional_vars.
 
     Returns:
-        SymPy expression for the minor (with non-target variables zeroed).
+        If return_u_gens is False: SymPy expression for the minor (with non-target variables zeroed).
+        If return_u_gens is True: (minor_expr, u_gens) where u_gens is suitable for
+        constructing Poly(minor_expr, *u_gens, domain='EX').
 
     Example:
         >>> minor = compute_minor_with_p_vars(
@@ -979,7 +989,10 @@ def compute_minor_with_p_vars(
         target_monomial_spec=combined_spec,
     )
     det_comp = DeterminantComputer(calc)
-    return det_comp.compute_minor_fast(*extra_row)
+    minor = det_comp.compute_minor_fast(*extra_row)
+    if return_u_gens:
+        return minor, det_comp.get_u_gens()
+    return minor
 
 
 # --------------------------------- Parsers ------------------------------------
