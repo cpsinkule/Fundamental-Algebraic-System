@@ -223,35 +223,41 @@ class FASMinorCalculator:
         )
 
     def _initialize_symbolic_variables(self) -> None:
-        """Initialize symbolic variables, setting non-target variables to zero.
+        """Initialize symbolic variables.
 
-        When target_monomial_spec is provided, variables NOT in the target
-        monomial are set to sp.Integer(0) instead of creating symbols.
-        This causes all downstream computations to automatically simplify.
+        All variables are created as symbols so that recursive row computations
+        produce correct intermediate results.  When target_monomial_spec is
+        provided, a substitution dict (_zero_subs) is built; it is applied
+        *after* each row is fully computed in get_row().
         """
         self.vertex_variables: Dict[Tuple[int, int], Any] = {}
         self.edge_variables: Dict[Tuple[int, Tuple[int, int]], Any] = {}
 
         for g_idx, graph in enumerate(self.graphs):
             for vertex in graph.vertices:
-                if self._should_create_symbol('vertex', g_idx, vertex):
-                    self.vertex_variables[(g_idx, vertex)] = sp.Symbol(f'u_{{{g_idx},{vertex}}}')
-                else:
-                    self.vertex_variables[(g_idx, vertex)] = sp.Integer(0)
+                self.vertex_variables[(g_idx, vertex)] = sp.Symbol(f'u_{{{g_idx},{vertex}}}')
 
         for g_idx, graph in enumerate(self.graphs):
             for edge in graph.edges:
                 src, tgt = edge
-                if self._should_create_symbol('edge', g_idx, edge):
-                    self.edge_variables[(g_idx, edge)] = sp.Symbol(f'u_{{{g_idx},({src},{tgt})}}')
-                else:
-                    self.edge_variables[(g_idx, edge)] = sp.Integer(0)
+                self.edge_variables[(g_idx, edge)] = sp.Symbol(f'u_{{{g_idx},({src},{tgt})}}')
 
-        # Only include actual symbols in the set (not zeros)
         self._vertex_symbol_set = {
             v for v in self.vertex_variables.values()
             if isinstance(v, sp.Symbol)
         }
+
+        # Build post-computation substitution dict for targeted zeroing
+        self._zero_subs: Dict[sp.Symbol, sp.Expr] = {}
+        if self._target_var_keys:
+            for g_idx, graph in enumerate(self.graphs):
+                for vertex in graph.vertices:
+                    if not self._should_create_symbol('vertex', g_idx, vertex):
+                        self._zero_subs[self.vertex_variables[(g_idx, vertex)]] = sp.Integer(0)
+            for g_idx, graph in enumerate(self.graphs):
+                for edge in graph.edges:
+                    if not self._should_create_symbol('edge', g_idx, edge):
+                        self._zero_subs[self.edge_variables[(g_idx, edge)]] = sp.Integer(0)
 
     # ----------------------- Structure function helpers -----------------------
     def _get_structure_function(self, key: Tuple) -> Any:
@@ -496,6 +502,9 @@ class FASMinorCalculator:
         row_spec = (graph_idx, vertex, layer)
         for j, col_spec in enumerate(col_specs):
             row[j] = self.build_matrix_entry(row_spec, col_spec)
+        # Apply targeted zeroing after full row computation
+        if self._zero_subs:
+            row = row.subs(self._zero_subs)
         return row
 
     def build_matrix_entry(self, row_spec: Tuple[int, int, int], col_spec: Tuple) -> Any:
@@ -702,16 +711,19 @@ class DeterminantComputer:
         return prod
 
     def _get_u_gens(self) -> List[sp.Symbol]:
-        """Stable ordered list of all u symbols: vertices then edges."""
+        """Stable ordered list of kept u symbols: vertices then edges."""
         vv = self.calculator.vertex_variables
         ev = self.calculator.edge_variables
-        # Filter out zeros (non-symbols)
+        zero_subs = getattr(self.calculator, '_zero_subs', {})
+        # Filter out zeros and variables targeted for post-computation zeroing
         verts = sorted(
-            [(k, v) for k, v in vv.items() if isinstance(v, sp.Symbol)],
+            [(k, v) for k, v in vv.items()
+             if isinstance(v, sp.Symbol) and v not in zero_subs],
             key=lambda kv: (kv[0][0], kv[0][1])
         )
         edges = sorted(
-            [(k, v) for k, v in ev.items() if isinstance(v, sp.Symbol)],
+            [(k, v) for k, v in ev.items()
+             if isinstance(v, sp.Symbol) and v not in zero_subs],
             key=lambda kv: (kv[0][0], kv[0][1][0], kv[0][1][1])
         )
         return [sym for _, sym in verts] + [sym for _, sym in edges]
@@ -810,10 +822,10 @@ class DeterminantComputer:
         def acc(key: Any, inc: int) -> None:
             if inc:
                 spec[key] = spec.get(key, 0) + inc
-        # Vertex root var appears in all layer monomials
+        # Root product: vertex 0 (depth-0 root) and root chain edges (k,k+1) for k=0..s-1
         for s, N_s in counts.items():
             acc(('vertex', component, 0), N_s)
-            for k in range(0, max(0, s - 1)):
+            for k in range(0, s):
                 edge = (k, k + 1)
                 acc(('edge', component, edge), N_s)
         return spec
