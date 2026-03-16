@@ -560,10 +560,13 @@ class FASMinorCalculator:
         row_spec = (graph_idx, vertex, layer)
         for j, col_spec in enumerate(col_specs):
             row[j] = self.build_matrix_entry(row_spec, col_spec)
-        # NOTE: Targeted zeroing is NOT applied here. It must be deferred
-        # until after the determinant is computed, because zeroing entries
-        # before the determinant destroys terms whose intermediate variables
-        # cancel in the Leibniz expansion. See compute_minor_fast().
+        # Apply targeted zeroing to the fully-computed row. This is safe
+        # because build_matrix_entry caches UNZEROED intermediate results,
+        # so the h̃_1 recursion (eq. 6.10) uses full symbolic values. Zeroing
+        # here only removes non-target variables from the final row output,
+        # keeping expressions small for the downstream determinant.
+        if self._zero_subs:
+            row = row.subs(self._zero_subs)
         return row
 
     def build_matrix_entry(self, row_spec: Tuple[int, int, int], col_spec: Tuple) -> Any:
@@ -776,15 +779,6 @@ class DeterminantComputer:
         for k, det_k in self._det_base_by_comp.items():
             if k != g:
                 result = result * det_k
-
-        # Apply targeted zeroing to the final minor expression, NOT to
-        # individual rows/entries. Zeroing before the determinant destroys
-        # monomials whose intermediate variables (e.g. non-root vertex vars)
-        # are essential for the recursive generation of higher-layer entries
-        # via h̃_1 (thesis eq. 6.10) but cancel in the Leibniz expansion.
-        zero_subs = getattr(self.calculator, '_zero_subs', {})
-        if zero_subs:
-            result = result.subs(zero_subs)
 
         return result
 
