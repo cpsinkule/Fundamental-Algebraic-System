@@ -1099,6 +1099,46 @@ def compute_minor_with_p_vars(
     return minor
 
 
+def extract_monomial_coefficient(
+    minor: sp.Expr,
+    u_gens: List[sp.Symbol],
+    deriv_orders: List[int],
+) -> sp.Expr:
+    """
+    Extract a monomial coefficient from a polynomial expression via
+    repeated differentiation and evaluation at zero.
+
+    For a monomial u_1^a * u_2^b * ..., the coefficient is:
+        (1 / a!b!...) * (∂^a/∂u_1^a)(∂^b/∂u_2^b)... f |_{u_1=u_2=...=0}
+
+    Args:
+        minor: SymPy expression (e.g., from compute_minor_with_p_vars).
+        u_gens: List of SymPy symbols corresponding to the u-variables.
+        deriv_orders: List of non-negative ints, same length as u_gens.
+                      The i-th entry is the derivative order w.r.t. u_gens[i].
+
+    Returns:
+        The exact coefficient of the monomial ∏ u_gens[i]^deriv_orders[i].
+    """
+    if len(u_gens) != len(deriv_orders):
+        raise ValueError(
+            f"u_gens length ({len(u_gens)}) must match "
+            f"deriv_orders length ({len(deriv_orders)})"
+        )
+    result = minor
+    factorial_denom = sp.Integer(1)
+    subs_dict = {}
+    for sym, order in zip(u_gens, deriv_orders):
+        if order < 0:
+            raise ValueError(f"Derivative order must be non-negative (got {order} for {sym})")
+        if order > 0:
+            result = sp.diff(result, sym, order)
+            factorial_denom *= sp.factorial(order)
+        subs_dict[sym] = sp.Integer(0)
+    result = result.subs(subs_dict)
+    return result / factorial_denom
+
+
 # --------------------------------- Parsers ------------------------------------
 def _parse_tuples(s: str) -> List[Tuple[int, ...]]:
     """Parse characteristic tuples from semicolon-separated format.
