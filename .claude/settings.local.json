@@ -13,7 +13,12 @@
       "Bash(/opt/anaconda3/bin/python -c \"\nfrom targeted_fas_minor import FASMinorCalculator\nfrom determinant_computer import DeterminantComputer\n\ncalc = FASMinorCalculator.from_characteristic_tuples\\([\\(3,1,5\\),\\(3,1,4\\)]\\)\ndet_comp = DeterminantComputer\\(calc\\)\n\nprint\\('Base rows:', det_comp.get_base_rows\\(\\)\\)\nprint\\(\\)\n\ng0 = calc.graphs[0]\nprint\\('Comp 0 vertices:', g0.vertices\\)\nprint\\('Comp 0 edges:', g0.edges\\)\nprint\\('Comp 0 vertex_depths:', g0.vertex_depths\\)\nprint\\(\\)\n\ng1 = calc.graphs[1]\nprint\\('Comp 1 vertices:', g1.vertices\\)\nprint\\('Comp 1 edges:', g1.edges\\)\nprint\\('Comp 1 vertex_depths:', g1.vertex_depths\\)\nprint\\(\\)\n\np_spec = det_comp.base_A_root_product_spec\\(\\)\nprint\\('p_spec keys:', list\\(p_spec.keys\\(\\)\\)\\)\nprint\\(\\)\nprint\\('Extra row \\(0,1,2\\) in base rows?', \\(0,1,2\\) in det_comp.get_base_rows\\(\\)\\)\n\")",
       "Bash(/opt/anaconda3/bin/python -m pytest test_determinant_computer.py -v 2>&1 | tail -35)",
       "Bash(/opt/anaconda3/bin/python -m pytest test_targeted_fas_minor.py -v 2>&1 | tail -20)",
-      "Bash(/opt/anaconda3/bin/python -m pytest test_targeted_fas_minor.py -v 2>&1)"
+      "Bash(/opt/anaconda3/bin/python -m pytest test_targeted_fas_minor.py -v 2>&1)",
+      "Bash(brew install:*)",
+      "Bash(which pdftoppm:*)",
+      "Bash(python -m pytest test_determinant_computer.py 2>&1; echo \"EXIT: $?\")",
+      "Bash(which python3:*)",
+      "Bash(python3 -c \"import sympy\" 2>&1; ls -la venv* .venv* env* 2>/dev/null; cat requirements.txt 2>/dev/null)"
     ],
     "deny": [],
     "ask": []

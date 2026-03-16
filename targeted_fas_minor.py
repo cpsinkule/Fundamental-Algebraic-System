@@ -150,6 +150,7 @@ class FASMinorCalculator:
         self._h_action_cache = None
         self._expanded_expr_cache: Dict[int, Any] = {}
         self._q_cache: Dict[Any, Any] = {}
+        self._h_result_cache: Dict[Any, Any] = {}
 
         # Store target monomial spec for early zeroing
         self.target_monomial_spec = target_monomial_spec
@@ -380,12 +381,12 @@ class FASMinorCalculator:
         k_val = (g_k, local_k)
         for g_i, graph_i in enumerate(self.graphs):
             for vertex_i in graph_i.vertices:
+                u_i = self.vertex_variables.get((g_i, vertex_i), 0)
                 if j_type == 'vertex':
                     key = ('edge', k_val, 'vertex', (g_i, vertex_i), 'vertex', j_val)
                 else:
                     key = ('edge', k_val, 'edge', j_val, 'vertex', (g_i, vertex_i))
                 c_coeff = self._get_structure_function(key)
-                u_i = self.vertex_variables.get((g_i, vertex_i), 0)
                 if c_coeff != 0 and u_i != 0:
                     result = result + c_coeff * u_i
         self._q_cache[cache_key] = result
@@ -393,6 +394,12 @@ class FASMinorCalculator:
 
     def _build_h_action(self) -> Dict[sp.Symbol, Any]:
         h_action: Dict[sp.Symbol, Any] = {}
+        # NOTE: We must NOT filter out zeroed variables here. The recursive
+        # formula 𝔞^{p+1} = (h̃_1(𝔞^p))_{(1)} (thesis eq. 6.10) requires the
+        # full Hamiltonian action to generate higher-layer entries correctly.
+        # Intermediate vertex variables (not in the target monomial) are
+        # essential for the recursion even though they don't appear in the
+        # final target. Zeroing is deferred to get_row() post-computation.
         for g_j, graph_j in enumerate(self.graphs):
             for vertex_j in graph_j.vertices:
                 u_j = self.vertex_variables[(g_j, vertex_j)]
@@ -416,16 +423,36 @@ class FASMinorCalculator:
             return 0
         if expr == 0:
             return 0
+        if expr.is_Number:
+            return 0
+        if expr.is_Symbol:
+            return action_map.get(expr, 0)
         if expr.is_Add:
-            return sum(self._apply_derivation(arg, action_map) for arg in expr.args)
-        if expr.is_Mul:
             result = 0
+            for arg in expr.args:
+                d = self._apply_derivation(arg, action_map)
+                if d != 0:
+                    result = result + d
+            return result
+        if expr.is_Mul:
             args = list(expr.args)
-            for i in range(len(args)):
-                term = 1
-                for j in range(len(args)):
-                    term = term * (self._apply_derivation(args[j], action_map) if i == j else args[j])
-                result = result + term
+            n = len(args)
+            if n == 1:
+                return self._apply_derivation(args[0], action_map)
+            # Precompute prefix/suffix products for O(n) term construction
+            prefix = [sp.Integer(1)] * (n + 1)
+            suffix = [sp.Integer(1)] * (n + 1)
+            for i in range(n):
+                prefix[i + 1] = prefix[i] * args[i]
+            for i in range(n - 1, -1, -1):
+                suffix[i] = args[i] * suffix[i + 1]
+            result = 0
+            for i in range(n):
+                if args[i].is_Number:
+                    continue
+                d_arg = self._apply_derivation(args[i], action_map)
+                if d_arg != 0:
+                    result = result + prefix[i] * d_arg * suffix[i + 1]
             return result
         if expr.is_Pow:
             base, exp = expr.as_base_exp()
@@ -439,8 +466,6 @@ class FASMinorCalculator:
                     return sp.diff(base ** exp, base) * base_h
             except Exception:
                 return 0
-        if expr.is_Symbol:
-            return action_map.get(expr, 0)
         return 0
 
     def _apply_h(self, expr, graph_idx: int) -> Any:
@@ -448,33 +473,66 @@ class FASMinorCalculator:
             return 0
         if expr == 0 or not getattr(expr, 'free_symbols', set()):
             return 0
+        cache_key = (expr, graph_idx)
+        if cache_key in self._h_result_cache:
+            return self._h_result_cache[cache_key]
         if self._h_action_cache is None:
             self._h_action_cache = self._build_h_action()
-        return self._apply_derivation(expr, self._h_action_cache)
+        result = self._apply_derivation(expr, self._h_action_cache)
+        self._h_result_cache[cache_key] = result
+        return result
 
     def _get_vertex_degree(self, expr) -> int:
-        if not self.use_symbolic or expr == 0:
+        if expr == 0:
             return 0
+        if expr.is_Number:
+            return 0
+        if expr.is_Symbol:
+            return 1 if expr in self._vertex_symbol_set else 0
+        if expr.is_Pow:
+            base, exp = expr.as_base_exp()
+            if base.is_Symbol and base in self._vertex_symbol_set:
+                return int(exp)
+            return 0
+        if expr.is_Mul:
+            deg = 0
+            for arg in expr.args:
+                deg += self._get_vertex_degree(arg)
+            return deg
+        # Fallback for complex expressions
         degree = 0
-        for symbol in expr.free_symbols:
-            if symbol in self._vertex_symbol_set:
-                degree += expr.as_coeff_exponent(symbol)[1]
+        vertex_syms = expr.free_symbols & self._vertex_symbol_set
+        for symbol in vertex_syms:
+            degree += int(expr.as_coeff_exponent(symbol)[1])
         return degree
 
     def _extract_principal_part(self, expr, target_vertex_degree: int) -> Any:
-        if not self.use_symbolic or expr == 0:
+        if expr == 0:
             return expr
-        expr_expanded = sp.expand(expr)
-        if expr_expanded.is_Add:
-            result = 0
-            for term in expr_expanded.args:
-                if self._get_vertex_degree(term) == target_vertex_degree:
-                    result = result + term
-            return result
-        else:
-            if self._get_vertex_degree(expr_expanded) == target_vertex_degree:
-                return expr_expanded
-            return 0
+        # Process each top-level addend separately to avoid expanding
+        # the entire expression at once (which is very expensive for large sums)
+        result = 0
+        top_terms = expr.args if expr.is_Add else [expr]
+        for top_term in top_terms:
+            # If the term has no nested sums, check degree directly
+            if top_term.is_Mul and not any(a.is_Add for a in top_term.args):
+                if self._get_vertex_degree(top_term) == target_vertex_degree:
+                    result = result + top_term
+                continue
+            if top_term.is_Symbol or top_term.is_Pow or top_term.is_Number:
+                if self._get_vertex_degree(top_term) == target_vertex_degree:
+                    result = result + top_term
+                continue
+            # Term needs expansion (contains nested sums in products)
+            expanded = sp.expand(top_term)
+            if expanded.is_Add:
+                for sub_term in expanded.args:
+                    if self._get_vertex_degree(sub_term) == target_vertex_degree:
+                        result = result + sub_term
+            else:
+                if self._get_vertex_degree(expanded) == target_vertex_degree:
+                    result = result + expanded
+        return result
 
     def _smart_simplify(self, expr) -> Any:
         if not self.use_symbolic or expr == 0:
@@ -502,9 +560,10 @@ class FASMinorCalculator:
         row_spec = (graph_idx, vertex, layer)
         for j, col_spec in enumerate(col_specs):
             row[j] = self.build_matrix_entry(row_spec, col_spec)
-        # Apply targeted zeroing after full row computation
-        if self._zero_subs:
-            row = row.subs(self._zero_subs)
+        # NOTE: Targeted zeroing is NOT applied here. It must be deferred
+        # until after the determinant is computed, because zeroing entries
+        # before the determinant destroys terms whose intermediate variables
+        # cancel in the Leibniz expansion. See compute_minor_fast().
         return row
 
     def build_matrix_entry(self, row_spec: Tuple[int, int, int], col_spec: Tuple) -> Any:
@@ -561,22 +620,27 @@ class FASMinorCalculator:
 
         # Edge column (A-entry)
         col_type, col_graph, edge_w = col_spec
+        cache_key_a = (row_graph, row_vertex, row_layer, col_graph, edge_w)
+        if cache_key_a in self.matrix_entries:
+            return self.matrix_entries[cache_key_a]
         if row_graph != col_graph:
+            self.matrix_entries[cache_key_a] = 0
             return 0
         # A base and recursion
         if row_layer == 1:
-            return self._compute_q((row_graph, row_vertex), (col_graph, edge_w), row_graph)
+            result = self._compute_q((row_graph, row_vertex), (col_graph, edge_w), row_graph)
+            self.matrix_entries[cache_key_a] = result
+            return result
         prev = self.build_matrix_entry((row_graph, row_vertex, row_layer - 1), ('edge', col_graph, edge_w))
-        h1 = self._extract_principal_part(self._apply_h(prev, row_graph), 1)
-        total = h1
-        for edge_l in self.graphs[row_graph].edges:
-            a_prev = self.build_matrix_entry((row_graph, row_vertex, row_layer - 1), ('edge', row_graph, edge_l))
-            q_lw = self._compute_q((row_graph, edge_l), (row_graph, edge_w), row_graph)
-            if a_prev != 0 and q_lw != 0:
-                total = total + a_prev * q_lw
-        total = self._extract_principal_part(total, 1)
+        total = self._extract_principal_part(self._apply_h(prev, row_graph), 1)
+        # NOTE: The sum_l a^{s-1}_{v,l} * q_{l,w} term is omitted here because
+        # q_{l,w} (edge-edge type) always has vertex degree 1, and a^{s-1}
+        # also has vertex degree 1, so their product has vertex degree 2.
+        # Since _extract_principal_part filters to degree 1, the sum never
+        # contributes to A entries.
         if row_layer > 2:
             total = self._smart_simplify(total)
+        self.matrix_entries[cache_key_a] = total
         return total
 
 
@@ -626,7 +690,7 @@ class DeterminantComputer:
                         base_rows.append((graph_idx, vertex, layer))
         return base_rows
 
-    # Cache per-component blocks and dets
+    # Cache per-component blocks, b columns, and dets
     def _ensure_base_blocks_cache(self) -> None:
         if hasattr(self, "_A_block_by_comp") and self._A_block_by_comp is not None:
             return
@@ -647,48 +711,82 @@ class DeterminantComputer:
         self._base_rows_by_comp = base_rows_by_comp
 
         A_block_by_comp: Dict[int, sp.Matrix] = {}
+        b_col_by_comp: Dict[int, sp.Matrix] = {}
         det_base_by_comp: Dict[int, sp.Expr] = {}
         for g_idx, rows_g in base_rows_by_comp.items():
             e_sz = comp_edge_sizes[g_idx]
             if e_sz == 0:
                 A_block_by_comp[g_idx] = sp.Matrix(0, 0, [])
+                b_col_by_comp[g_idx] = sp.Matrix(0, 1, [])
                 det_base_by_comp[g_idx] = sp.Integer(1)
                 continue
             if len(rows_g) != e_sz:
                 raise ValueError(
                     f"Base rows for component {g_idx} count {len(rows_g)} does not match edge count {e_sz}."
                 )
-            block = None
+            a_entries = []
+            b_entries = []
             c0 = comp_edge_starts[g_idx]
             c1 = c0 + e_sz
             for r in rows_g:
                 row = self.calculator.get_row(*r)
-                row_block = row[:, c0:c1]
-                block = row_block if block is None else block.col_join(row_block)
-            A_block_by_comp[g_idx] = block
-            det_base_by_comp[g_idx] = block.det(method='berkowitz')
+                for j in range(c0, c1):
+                    a_entries.append(row[0, j])
+                b_entries.append(row[0, -1])
+            A_block = sp.Matrix(len(rows_g), e_sz, a_entries)
+            A_block_by_comp[g_idx] = A_block
+            b_col_by_comp[g_idx] = sp.Matrix(len(rows_g), 1, b_entries)
+            det_base_by_comp[g_idx] = A_block.det(method='berkowitz')
         self._A_block_by_comp = A_block_by_comp
+        self._b_col_by_comp = b_col_by_comp
         self._det_base_by_comp = det_base_by_comp
 
     def get_base_rows(self) -> List[Tuple[int, int, int]]:
         return self.base_rows.copy()
 
     def compute_minor_fast(self, graph_idx: int, vertex: int, layer: int) -> sp.Expr:
-        user_row = (graph_idx, vertex, layer)
-        all_rows = self.base_rows + [user_row]
+        self._ensure_base_blocks_cache()
 
-        # Build full matrix: one row per (base_rows + extra), all columns (edges + b)
-        rows_list = []
-        for row_spec in all_rows:
-            row = self.calculator.get_row(*row_spec)
-            rows_list.append(row)
+        g = graph_idx
+        n_g = self._comp_edge_sizes[g]
 
-        full_matrix = rows_list[0]
-        for r in rows_list[1:]:
-            full_matrix = full_matrix.col_join(r)
+        # Get extra row
+        extra_full = self.calculator.get_row(graph_idx, vertex, layer)
+        c0 = self._comp_edge_starts[g]
 
-        # Use SymPy's built-in determinant (berkowitz is division-free)
-        return full_matrix.det(method='berkowitz')
+        # Build M_g: (n_g+1) x (n_g+1) augmented matrix for target component
+        # Top: [A_g | b_g] from base rows cache
+        # Bottom: [extra_A_g | extra_b] from extra row
+        A_g = self._A_block_by_comp[g]
+        b_g = self._b_col_by_comp[g]
+
+        extra_a_entries = [extra_full[0, c0 + j] for j in range(n_g)]
+        extra_b = extra_full[0, -1]
+
+        top = A_g.row_join(b_g)
+        bottom = sp.Matrix(1, n_g + 1, extra_a_entries + [extra_b])
+        M_g = top.col_join(bottom)
+
+        det_M_g = M_g.det(method='berkowitz')
+
+        # det(full) = prod_{k != g} det(A_k) * det(M_g)
+        # (Proved via row/column permutation to block-triangular form;
+        #  the sign of the double permutation is always +1.)
+        result = det_M_g
+        for k, det_k in self._det_base_by_comp.items():
+            if k != g:
+                result = result * det_k
+
+        # Apply targeted zeroing to the final minor expression, NOT to
+        # individual rows/entries. Zeroing before the determinant destroys
+        # monomials whose intermediate variables (e.g. non-root vertex vars)
+        # are essential for the recursive generation of higher-layer entries
+        # via h̃_1 (thesis eq. 6.10) but cancel in the Leibniz expansion.
+        zero_subs = getattr(self.calculator, '_zero_subs', {})
+        if zero_subs:
+            result = result.subs(zero_subs)
+
+        return result
 
     def compute_y_vector(self, graph_idx: int, vertex: int, layer: int) -> sp.Matrix:
         self._ensure_base_blocks_cache()
