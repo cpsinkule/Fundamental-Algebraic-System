@@ -68,24 +68,50 @@ class ComponentGraph:
         return self.adjacency.get(vertex, [])
 
     def _compute_vertex_depths(self) -> Dict[int, int]:
+        """
+        Compute vertex depths via the successive reduction algorithm from the
+        thesis (Definition 2.8, Definition 3.1, Section 3).
+
+        The reduction R_v (Definition 2.8) deletes vertex v, its outgoing
+        edges Out(v), and the vertices that are isolated in the current graph
+        (i.e., vertices with total index 0 BEFORE the root deletion).
+
+        Depths are assigned by membership in the I_j sets:
+          I_0 = vertices removed by R_{v_0}            → depth 0
+          I_j = vertices removed by R_{v_j} after
+                prior reductions R_{v_{j-1}}...R_{v_0}  → depth j
+          I_{ω+1} = whatever remains                    → depth ω+1
+
+        By Remark 3.2, r_p = |{v : depth(v) > p}|, which ensures the base
+        row selection algorithm produces exactly n-m rows.
+        """
         depths: Dict[int, int] = {}
-        for i in range(self.num_roots):
-            if i in self.vertices:
-                depths[i] = i
-        edge_depths = {}
-        for src, tgt in self.edges:
-            edge_depths[(src, tgt)] = depths.get(src, 0)
-        for v in self.vertices:
-            if v < self.num_roots:
-                continue
-            max_depth = 0
-            found_edge = False
-            for edge in self.edges:
-                src, tgt = edge
-                if src == v or tgt == v:
-                    found_edge = True
-                    max_depth = max(max_depth, edge_depths.get(edge, 0))
-            depths[v] = max_depth + 1 if found_edge else 0
+        remaining_vertices = set(self.vertices)
+        remaining_edges = list(self.edges)
+
+        for j in range(self.num_roots):
+            root = j
+            # Identify vertices isolated in the CURRENT graph (before deletion)
+            vertices_with_edges: Set[int] = set()
+            for src, tgt in remaining_edges:
+                vertices_with_edges.add(src)
+                vertices_with_edges.add(tgt)
+            isolated = {v for v in remaining_vertices if v not in vertices_with_edges}
+
+            # R_{v_j}: remove root, its outgoing edges, and pre-existing isolated vertices
+            removed = {root} | isolated
+            remaining_edges = [(src, tgt) for src, tgt in remaining_edges if src != root]
+
+            # Assign depth j to all removed vertices
+            for v in removed:
+                if v in remaining_vertices:
+                    depths[v] = j
+            remaining_vertices -= removed
+
+        # Any vertices still remaining get depth ω+1
+        for v in remaining_vertices:
+            depths[v] = self.num_roots  # num_roots = ω+1
+
         return depths
 
     def _compute_edge_depths(self) -> Dict[Tuple[int, int], int]:

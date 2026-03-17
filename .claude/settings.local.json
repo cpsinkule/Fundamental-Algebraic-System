@@ -18,7 +18,8 @@
       "Bash(which pdftoppm:*)",
       "Bash(python -m pytest test_determinant_computer.py 2>&1; echo \"EXIT: $?\")",
       "Bash(which python3:*)",
-      "Bash(python3 -c \"import sympy\" 2>&1; ls -la venv* .venv* env* 2>/dev/null; cat requirements.txt 2>/dev/null)"
+      "Bash(python3 -c \"import sympy\" 2>&1; ls -la venv* .venv* env* 2>/dev/null; cat requirements.txt 2>/dev/null)",
+      "Bash(pip3 install:*)"
     ],
     "deny": [],
     "ask": []
