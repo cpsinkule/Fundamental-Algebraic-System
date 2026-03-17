@@ -914,10 +914,11 @@ class DeterminantComputer:
         def acc(key: Any, inc: int) -> None:
             if inc:
                 spec[key] = spec.get(key, 0) + inc
-        # Root product: vertex 0 (depth-0 root) and root chain edges (k,k+1) for k=0..s-1
+        # Root product (thesis eq. 6.19): layer-s root monomial has vertex ρ_0
+        # and edges ρ_0→ρ_1, ..., ρ_{s-2}→ρ_{s-1} (path of length s-1).
         for s, N_s in counts.items():
             acc(('vertex', component, 0), N_s)
-            for k in range(0, s):
+            for k in range(0, s - 1):
                 edge = (k, k + 1)
                 acc(('edge', component, edge), N_s)
         return spec
