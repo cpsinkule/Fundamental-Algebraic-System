@@ -1,10 +1,10 @@
 """
-Targeted FAS Minor Calculator with Early Variable Zeroing.
+Targeted FAS Minor Calculator with Deferred Variable Zeroing.
 
 This script extends hpc_fas_minor.py to compute FAS minors efficiently
 when searching for specific monomial coefficients. The key optimization:
-automatically zero out variables NOT in the target monomial EARLY
-(during row construction), preventing expression explosion.
+compute each recursive row symbolically, then zero out variables not in the
+target monomial after the row is fully constructed.
 
 Usage examples:
   # Compute coefficient of a specific monomial
@@ -148,8 +148,9 @@ class FASMinorCalculator:
     Vertices and edges are indexed locally per component graph.
 
     Supports targeted variable zeroing: when target_monomial_spec is provided,
-    all variables NOT in the target monomial are set to 0 during initialization,
-    dramatically simplifying downstream computations.
+    variables not in the target monomial are zeroed only after each row has
+    been computed, preserving the recursive construction while simplifying the
+    final row expressions.
     """
 
     def __init__(
@@ -178,7 +179,7 @@ class FASMinorCalculator:
         self._q_cache: Dict[Any, Any] = {}
         self._h_result_cache: Dict[Any, Any] = {}
 
-        # Store target monomial spec for early zeroing
+        # Store target monomial spec for deferred post-row zeroing
         self.target_monomial_spec = target_monomial_spec
         self._target_var_keys = self._parse_monomial_keys(target_monomial_spec)
 
@@ -988,9 +989,9 @@ def compute_monomial_coefficient(
     """
     One-shot API for computing coefficient of a monomial in a FAS minor.
 
-    Uses targeted variable zeroing for efficient computation: variables NOT
-    in the target monomial are set to 0 during row construction, preventing
-    expression explosion.
+    Uses targeted variable zeroing for efficient computation: variables not
+    in the target monomial are set to 0 after each recursive row has been
+    computed.
 
     IMPORTANT: This function is optimized for match='exact' mode. For
     match='divides', the residual polynomial may contain variables beyond
@@ -1079,8 +1080,8 @@ def compute_minor_with_p_vars(
     """
     Compute minor keeping only variables in p plus user-specified additional variables.
 
-    All other variables are set to 0 during row construction. This is useful
-    when searching for monomials that contain p as a factor.
+    All other variables are set to 0 after each row is computed. This is
+    useful when searching for monomials that contain p as a factor.
 
     Args:
         char_tuples: List of characteristic tuples
@@ -1310,7 +1311,7 @@ def _parse_monomial(s: str) -> Dict[Tuple, int]:
 # ----------------------------------- CLI -------------------------------------
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Targeted FAS minor calculator with early variable zeroing.",
+        description="Targeted FAS minor calculator with deferred post-row variable zeroing.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
