@@ -85,6 +85,12 @@ def test_structure_function_symbol_builds_expected_name():
     assert symbol == sp.Symbol("c^{(1,0)}_{(1,0),(0,0)}")
 
 
+def test_structure_function_symbol_accepts_compact_index_input():
+    symbol = structure_function_symbol([(1, 0), (1, 0), (0, 0)])
+
+    assert symbol == sp.Symbol("c^{(1,0)}_{(1,0),(0,0)}")
+
+
 def test_differentiate_by_structure_function_matches_sympy_diff_on_minor():
     char_tuples = [(1, 2), (1, 2)]
     extra_row = (0, 0, 1)
@@ -101,6 +107,36 @@ def test_differentiate_by_structure_function_matches_sympy_diff_on_minor():
     actual = differentiate_by_structure_function(minor, key)
 
     assert sp.expand(actual - expected) == 0
+
+
+def test_differentiate_by_structure_function_compact_input_checks_both_orders():
+    upper = (0, (0, 1))
+    lower_a = (0, 0)
+    lower_b = (0, 1)
+    primary = sp.Symbol("c^{0,(0,1)}_{(0,0),(0,1)}")
+    swapped = sp.Symbol("c^{0,(0,1)}_{(0,1),(0,0)}")
+    x = sp.Symbol("x")
+    y = sp.Symbol("y")
+    expr = primary * x + swapped * y
+
+    actual = differentiate_by_structure_function(expr, [upper, lower_a, lower_b])
+
+    assert actual == x + y
+
+
+def test_differentiate_by_structure_function_compact_input_second_order():
+    upper = (0, (0, 1))
+    lower_a = (0, 0)
+    lower_b = (0, 1)
+    primary = sp.Symbol("c^{0,(0,1)}_{(0,0),(0,1)}")
+    swapped = sp.Symbol("c^{0,(0,1)}_{(0,1),(0,0)}")
+    x = sp.Symbol("x")
+    y = sp.Symbol("y")
+    expr = primary**2 * x + swapped**2 * y
+
+    actual = differentiate_by_structure_function(expr, [upper, lower_a, lower_b], order=2)
+
+    assert actual == 2 * x + 2 * y
 
 
 def test_differentiate_sparse_coefficients_preserves_u_exponents():
@@ -131,3 +167,17 @@ def test_differentiate_by_structure_function_raises_when_symbol_missing():
         assert "is not present in the supplied expression" in str(exc)
     else:
         raise AssertionError("Expected ValueError when structure function is absent")
+
+
+def test_differentiate_by_structure_function_raises_when_compact_symbol_missing():
+    x = sp.Symbol("u_{0,0}")
+
+    try:
+        differentiate_by_structure_function(
+            x + 1,
+            [(0, (0, 1)), (0, 0), (0, 1)],
+        )
+    except ValueError as exc:
+        assert "Neither the requested structure function nor its lower-index-swapped form" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError when compact structure function is absent")

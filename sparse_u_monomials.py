@@ -317,8 +317,112 @@ def format_sparse_terms(
     ]
 
 
+def _infer_index_type(index: Tuple) -> str:
+    if not isinstance(index, tuple) or len(index) != 2:
+        raise ValueError(f"Invalid index tuple: {index}")
+    _, local_id = index
+    if isinstance(local_id, int):
+        return "vertex"
+    if isinstance(local_id, tuple) and len(local_id) == 2:
+        return "edge"
+    raise ValueError(f"Unable to infer index type from tuple: {index}")
+
+
+def _structure_function_symbol_from_compact_indices(
+    upper_index: Tuple,
+    lower_index_a: Tuple,
+    lower_index_b: Tuple,
+    *,
+    strict: bool,
+) -> Optional[sp.Symbol]:
+    upper_type = _infer_index_type(upper_index)
+    lower_type_a = _infer_index_type(lower_index_a)
+    lower_type_b = _infer_index_type(lower_index_b)
+
+    if upper_type == "edge" and lower_type_a == "vertex" and lower_type_b == "vertex":
+        g_k, edge_k = upper_index
+        g_i, vertex_i = lower_index_a
+        g_j, vertex_j = lower_index_b
+        k_src, k_tgt = edge_k
+        symbol_name = f"c^{{{g_k},({k_src},{k_tgt})}}_{{({g_i},{vertex_i}),({g_j},{vertex_j})}}"
+        return sp.Symbol(symbol_name)
+
+    if upper_type == "edge" and lower_type_a == "edge" and lower_type_b == "vertex":
+        g_k, edge_k = upper_index
+        g_l, edge_l = lower_index_a
+        g_i, vertex_i = lower_index_b
+        k_src, k_tgt = edge_k
+        l_src, l_tgt = edge_l
+        symbol_name = f"c^{{{g_k},({k_src},{k_tgt})}}_{{({g_l},({l_src},{l_tgt})),({g_i},{vertex_i})}}"
+        return sp.Symbol(symbol_name)
+
+    if upper_type == "vertex" and lower_type_a == "vertex" and lower_type_b == "vertex":
+        g_l, vertex_l = upper_index
+        g_w, vertex_w = lower_index_a
+        g_v, vertex_v = lower_index_b
+        symbol_name = f"c^{{({g_l},{vertex_l})}}_{{({g_w},{vertex_w}),({g_v},{vertex_v})}}"
+        return sp.Symbol(symbol_name)
+
+    if strict:
+        raise ValueError(
+            "Unsupported compact structure function signature. "
+            "Expected upper/lower indices matching one of the supported "
+            "signatures: edge-vertex-vertex, edge-edge-vertex, or vertex-vertex-vertex."
+        )
+    return None
+
+
+def _is_compact_structure_function_spec(structure_function: object) -> bool:
+    if not isinstance(structure_function, (list, tuple)) or len(structure_function) != 3:
+        return False
+    return all(isinstance(item, tuple) and len(item) == 2 for item in structure_function)
+
+
+def _resolve_structure_function_variants(
+    structure_function: sp.Symbol | str | StructureFunctionKey | Sequence[Tuple],
+) -> List[sp.Symbol]:
+    if isinstance(structure_function, sp.Symbol):
+        return [structure_function]
+    if isinstance(structure_function, str):
+        return [sp.Symbol(structure_function)]
+    if _is_compact_structure_function_spec(structure_function):
+        upper_index, lower_index_a, lower_index_b = structure_function
+        primary = _structure_function_symbol_from_compact_indices(
+            upper_index,
+            lower_index_a,
+            lower_index_b,
+            strict=False,
+        )
+        swapped = _structure_function_symbol_from_compact_indices(
+            upper_index,
+            lower_index_b,
+            lower_index_a,
+            strict=False,
+        )
+        variants: List[sp.Symbol] = []
+        if primary is not None:
+            variants.append(primary)
+        if swapped is not None and swapped != primary:
+            variants.append(swapped)
+        if not variants:
+            _structure_function_symbol_from_compact_indices(
+                upper_index,
+                lower_index_a,
+                lower_index_b,
+                strict=True,
+            )
+        return variants
+    if not isinstance(structure_function, tuple) or len(structure_function) != 6:
+        raise ValueError(
+            "structure_function must be a SymPy symbol, a symbol name string, "
+            "a compact [upper, lower1, lower2] index list/tuple, or a six-tuple structure function key"
+        )
+
+    return [structure_function_symbol(structure_function)]
+
+
 def structure_function_symbol(
-    structure_function: sp.Symbol | str | StructureFunctionKey,
+    structure_function: sp.Symbol | str | StructureFunctionKey | Sequence[Tuple],
 ) -> sp.Symbol:
     """
     Convert a structure-function reference into the exact SymPy symbol.
@@ -332,10 +436,34 @@ def structure_function_symbol(
         return structure_function
     if isinstance(structure_function, str):
         return sp.Symbol(structure_function)
+    if _is_compact_structure_function_spec(structure_function):
+        upper_index, lower_index_a, lower_index_b = structure_function
+        symbol = _structure_function_symbol_from_compact_indices(
+            upper_index,
+            lower_index_a,
+            lower_index_b,
+            strict=False,
+        )
+        if symbol is not None:
+            return symbol
+        swapped = _structure_function_symbol_from_compact_indices(
+            upper_index,
+            lower_index_b,
+            lower_index_a,
+            strict=False,
+        )
+        if swapped is not None:
+            return swapped
+        _structure_function_symbol_from_compact_indices(
+            upper_index,
+            lower_index_a,
+            lower_index_b,
+            strict=True,
+        )
     if not isinstance(structure_function, tuple) or len(structure_function) != 6:
         raise ValueError(
             "structure_function must be a SymPy symbol, a symbol name string, "
-            "or a six-tuple structure function key"
+            "a compact [upper, lower1, lower2] index list/tuple, or a six-tuple structure function key"
         )
 
     index_type_a, val_a, index_type_b, val_b, index_type_c, val_c = structure_function
@@ -365,24 +493,44 @@ def structure_function_symbol(
 
 def differentiate_by_structure_function(
     expr: sp.Expr,
-    structure_function: sp.Symbol | str | StructureFunctionKey,
+    structure_function: sp.Symbol | str | StructureFunctionKey | Sequence[Tuple],
     *,
     order: int = 1,
 ) -> sp.Expr:
-    """Differentiate an expression with respect to a chosen structure function."""
+    """
+    Differentiate an expression with respect to a chosen structure function.
+
+    Compact ``[upper, lower1, lower2]`` input accounts for antisymmetry in the
+    lower indices by also checking the swapped lower ordering on the original
+    expression.
+    """
     if order < 0:
         raise ValueError("order must be non-negative")
-    symbol = structure_function_symbol(structure_function)
-    if symbol not in getattr(expr, "free_symbols", set()):
+    if order == 0:
+        return expr
+    free_symbols = getattr(expr, "free_symbols", set())
+    variants = _resolve_structure_function_variants(structure_function)
+    present_variants = [symbol for symbol in variants if symbol in free_symbols]
+    if not present_variants:
+        if _is_compact_structure_function_spec(structure_function):
+            names = ", ".join(str(symbol) for symbol in variants)
+            raise ValueError(
+                "Neither the requested structure function nor its lower-index-swapped "
+                f"form is present in the supplied expression: {names}"
+            )
+        symbol = variants[0]
         raise ValueError(
             f"Structure function {symbol} is not present in the supplied expression"
         )
-    return sp.diff(expr, symbol, order)
+    result = sp.Integer(0)
+    for symbol in present_variants:
+        result += sp.diff(expr, symbol, order)
+    return result
 
 
 def differentiate_sparse_coefficients(
     poly: SparsePolynomial,
-    structure_function: sp.Symbol | str | StructureFunctionKey,
+    structure_function: sp.Symbol | str | StructureFunctionKey | Sequence[Tuple],
     *,
     order: int = 1,
 ) -> SparsePolynomial:
@@ -394,10 +542,14 @@ def differentiate_sparse_coefficients(
     """
     if order < 0:
         raise ValueError("order must be non-negative")
-    symbol = structure_function_symbol(structure_function)
+    if order == 0:
+        return dict(poly)
+    variants = _resolve_structure_function_variants(structure_function)
     result: SparsePolynomial = {}
     for exponents, coeff in poly.items():
-        differentiated = sp.diff(coeff, symbol, order)
+        differentiated = sp.Integer(0)
+        for symbol in variants:
+            differentiated += sp.diff(coeff, symbol, order)
         if differentiated != 0:
             result[exponents] = differentiated
     return result
