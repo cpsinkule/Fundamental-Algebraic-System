@@ -373,6 +373,10 @@ def differentiate_by_structure_function(
     if order < 0:
         raise ValueError("order must be non-negative")
     symbol = structure_function_symbol(structure_function)
+    if symbol not in getattr(expr, "free_symbols", set()):
+        raise ValueError(
+            f"Structure function {symbol} is not present in the supplied expression"
+        )
     return sp.diff(expr, symbol, order)
 
 

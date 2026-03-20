@@ -117,3 +117,17 @@ def test_differentiate_sparse_coefficients_preserves_u_exponents():
         (2,): sp.Integer(1),
         (1,): 2 * coeff_symbol,
     }
+
+
+def test_differentiate_by_structure_function_raises_when_symbol_missing():
+    x = sp.Symbol("u_{0,0}")
+
+    try:
+        differentiate_by_structure_function(
+            x + 1,
+            "c^{(9,9)}_{(9,9),(9,9)}",
+        )
+    except ValueError as exc:
+        assert "is not present in the supplied expression" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError when structure function is absent")
