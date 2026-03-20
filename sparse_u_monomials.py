@@ -18,6 +18,7 @@ from targeted_fas_minor import DeterminantComputer, FASMinorCalculator, compute_
 
 ExponentVector = Tuple[int, ...]
 SparsePolynomial = Dict[ExponentVector, sp.Expr]
+StructureFunctionKey = Tuple[str, Tuple, str, Tuple, str, Tuple]
 
 
 class TooManyTermsError(RuntimeError):
@@ -316,6 +317,88 @@ def format_sparse_terms(
     ]
 
 
+def structure_function_symbol(
+    structure_function: sp.Symbol | str | StructureFunctionKey,
+) -> sp.Symbol:
+    """
+    Convert a structure-function reference into the exact SymPy symbol.
+
+    Accepted inputs:
+    - an existing SymPy symbol
+    - the exact symbol name string
+    - the six-tuple key format used internally by ``targeted_fas_minor``
+    """
+    if isinstance(structure_function, sp.Symbol):
+        return structure_function
+    if isinstance(structure_function, str):
+        return sp.Symbol(structure_function)
+    if not isinstance(structure_function, tuple) or len(structure_function) != 6:
+        raise ValueError(
+            "structure_function must be a SymPy symbol, a symbol name string, "
+            "or a six-tuple structure function key"
+        )
+
+    index_type_a, val_a, index_type_b, val_b, index_type_c, val_c = structure_function
+    if index_type_a == "edge" and index_type_b == "vertex" and index_type_c == "vertex":
+        g_k, edge_k = val_a
+        g_i, vertex_i = val_b
+        g_j, vertex_j = val_c
+        k_src, k_tgt = edge_k
+        symbol_name = f"c^{{{g_k},({k_src},{k_tgt})}}_{{({g_i},{vertex_i}),({g_j},{vertex_j})}}"
+        return sp.Symbol(symbol_name)
+    if index_type_a == "edge" and index_type_b == "edge" and index_type_c == "vertex":
+        g_k, edge_k = val_a
+        g_l, edge_l = val_b
+        g_i, vertex_i = val_c
+        k_src, k_tgt = edge_k
+        l_src, l_tgt = edge_l
+        symbol_name = f"c^{{{g_k},({k_src},{k_tgt})}}_{{({g_l},({l_src},{l_tgt})),({g_i},{vertex_i})}}"
+        return sp.Symbol(symbol_name)
+    if index_type_a == "vertex" and index_type_b == "vertex" and index_type_c == "vertex":
+        g_l, vertex_l = val_a
+        g_w, vertex_w = val_b
+        g_v, vertex_v = val_c
+        symbol_name = f"c^{{({g_l},{vertex_l})}}_{{({g_w},{vertex_w}),({g_v},{vertex_v})}}"
+        return sp.Symbol(symbol_name)
+    raise ValueError(f"Unsupported structure function key signature: {structure_function}")
+
+
+def differentiate_by_structure_function(
+    expr: sp.Expr,
+    structure_function: sp.Symbol | str | StructureFunctionKey,
+    *,
+    order: int = 1,
+) -> sp.Expr:
+    """Differentiate an expression with respect to a chosen structure function."""
+    if order < 0:
+        raise ValueError("order must be non-negative")
+    symbol = structure_function_symbol(structure_function)
+    return sp.diff(expr, symbol, order)
+
+
+def differentiate_sparse_coefficients(
+    poly: SparsePolynomial,
+    structure_function: sp.Symbol | str | StructureFunctionKey,
+    *,
+    order: int = 1,
+) -> SparsePolynomial:
+    """
+    Differentiate sparse polynomial coefficients with respect to a structure function.
+
+    This leaves the u-exponent vectors unchanged and differentiates only the
+    coefficient data attached to each monomial.
+    """
+    if order < 0:
+        raise ValueError("order must be non-negative")
+    symbol = structure_function_symbol(structure_function)
+    result: SparsePolynomial = {}
+    for exponents, coeff in poly.items():
+        differentiated = sp.diff(coeff, symbol, order)
+        if differentiated != 0:
+            result[exponents] = differentiated
+    return result
+
+
 def monomial_spec_to_exponent_vector(
     monomial_spec: Dict[Tuple, int],
     u_gens: Sequence[sp.Symbol],
@@ -406,6 +489,9 @@ __all__ = [
     "filter_sparse_poly",
     "iter_sorted_terms",
     "format_sparse_terms",
+    "structure_function_symbol",
+    "differentiate_by_structure_function",
+    "differentiate_sparse_coefficients",
     "monomial_spec_to_exponent_vector",
     "enumerate_minor_u_monomials",
 ]
