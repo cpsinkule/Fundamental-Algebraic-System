@@ -181,6 +181,7 @@ def search_simple_coefficients(
     diff_order: int = 1,
     extra_rows: Optional[List[Tuple[int, int, int]]] = None,
     progress_callback: Optional[Callable[[int, int, Tuple[int, int, int]], None]] = None,
+    finding_callback: Optional[Callable[[SimpleCoefficientResult], None]] = None,
 ) -> SearchSummary:
     """Search minors for monomials with simple differentiated coefficients.
 
@@ -198,6 +199,9 @@ def search_simple_coefficients(
         extra_rows: Explicit list of extra rows. If None, uses
             enumerate_row_complements for component 0.
         progress_callback: Optional (current, total, extra_row) -> None.
+        finding_callback: Optional (SimpleCoefficientResult) -> None.
+            Called immediately each time a simple coefficient is found,
+            enabling live/streaming output.
 
     Returns:
         SearchSummary with all findings.
@@ -262,12 +266,15 @@ def search_simple_coefficients(
                 for sym, exp in zip(u_gens, monom_tuple):
                     if exp:
                         u_monomial *= sym ** exp
-                findings.append(SimpleCoefficientResult(
+                result = SimpleCoefficientResult(
                     extra_row=row,
                     u_monomial=u_monomial,
                     coefficient=coeff,
                     classification=classification,
-                ))
+                )
+                findings.append(result)
+                if finding_callback:
+                    finding_callback(result)
 
     elapsed = time.monotonic() - t0
 
@@ -341,6 +348,10 @@ Examples:
         "--quiet", "-q", action="store_true",
         help="Suppress progress output.",
     )
+    parser.add_argument(
+        "--live", action="store_true",
+        help="Print each result as it is found.",
+    )
     return parser
 
 
@@ -353,11 +364,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     callback = None if args.quiet else _stderr_progress
 
+    finding_count = [0]
+
+    def _live_finding(result: SimpleCoefficientResult) -> None:
+        finding_count[0] += 1
+        print(f"  [{finding_count[0]}] Row {result.extra_row}: "
+              f"{result.u_monomial} -> {result.coefficient} [{result.classification}]",
+              flush=True)
+
     summary = search_simple_coefficients(
         char_tuples,
         sf_symbol,
         diff_order=args.diff_order,
         progress_callback=callback,
+        finding_callback=_live_finding if args.live else None,
     )
 
     # Print human-readable summary
