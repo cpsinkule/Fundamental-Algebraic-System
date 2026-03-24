@@ -378,12 +378,111 @@ def _is_compact_structure_function_spec(structure_function: object) -> bool:
     return all(isinstance(item, tuple) and len(item) == 2 for item in structure_function)
 
 
+def _parse_structure_function_string(
+    name: str,
+) -> Optional[Tuple[Tuple, Tuple, Tuple]]:
+    """Parse a structure function symbol name into compact index spec.
+
+    Recognizes the three formats produced by
+    ``_structure_function_symbol_from_compact_indices``:
+
+    Type 1 (edge-vertex-vertex):
+        ``c^{g,(s,t)}_{(g,v),(g,v)}``
+    Type 2 (edge-edge-vertex):
+        ``c^{g,(s,t)}_{(g,(s,t)),(g,v)}``  — note nested parens for edge index
+    Type 3 (vertex-vertex-vertex):
+        ``c^{(g,v)}_{(g,v),(g,v)}``
+
+    Returns compact spec ``(upper, lower_a, lower_b)`` or *None* if the
+    string does not match any known format.
+    """
+    import re
+
+    if not name.startswith("c^{"):
+        return None
+
+    # Split into upper and lower parts at "}_{" boundary
+    m = re.match(r'^c\^{(.+)}_\{(.+)\}$', name)
+    if not m:
+        return None
+
+    upper_str = m.group(1)
+    lower_str = m.group(2)
+
+    def _parse_index(s: str) -> Tuple:
+        """Parse a single index like '(0,2)' or '(0,(0,1))' into a tuple."""
+        s = s.strip()
+        if not s.startswith('(') or not s.endswith(')'):
+            raise ValueError(f"Cannot parse index: {s}")
+        inner = s[1:-1]
+        # Check for nested tuple: (g,(s,t))
+        nested = re.match(r'^(\d+),\((\d+),(\d+)\)$', inner)
+        if nested:
+            g = int(nested.group(1))
+            a = int(nested.group(2))
+            b = int(nested.group(3))
+            return (g, (a, b))
+        # Simple pair: (g,v)
+        simple = re.match(r'^(\d+),(\d+)$', inner)
+        if simple:
+            return (int(simple.group(1)), int(simple.group(2)))
+        raise ValueError(f"Cannot parse index: {s}")
+
+    def _parse_upper(s: str) -> Tuple:
+        """Parse the upper index: either 'g,(s,t)' (edge) or '(g,v)' (vertex)."""
+        s = s.strip()
+        # Edge upper: g,(s,t)
+        edge_m = re.match(r'^(\d+),\((\d+),(\d+)\)$', s)
+        if edge_m:
+            g = int(edge_m.group(1))
+            src = int(edge_m.group(2))
+            tgt = int(edge_m.group(3))
+            return (g, (src, tgt))
+        # Vertex upper: (g,v)
+        if s.startswith('(') and s.endswith(')'):
+            inner = s[1:-1]
+            parts = re.match(r'^(\d+),(\d+)$', inner)
+            if parts:
+                return (int(parts.group(1)), int(parts.group(2)))
+        raise ValueError(f"Cannot parse upper index: {s}")
+
+    def _split_lower(s: str) -> Tuple[str, str]:
+        """Split lower indices at the top-level comma.
+
+        Handles nested parens like '(0,(0,1)),(0,2)'.
+        """
+        depth = 0
+        for i, ch in enumerate(s):
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+            elif ch == ',' and depth == 0:
+                return s[:i], s[i + 1:]
+        raise ValueError(f"Cannot split lower indices: {s}")
+
+    try:
+        upper = _parse_upper(upper_str)
+        lower_a_str, lower_b_str = _split_lower(lower_str)
+        lower_a = _parse_index(lower_a_str)
+        lower_b = _parse_index(lower_b_str)
+        return (upper, lower_a, lower_b)
+    except ValueError:
+        return None
+
+
 def _resolve_structure_function_variants(
     structure_function: sp.Symbol | str | StructureFunctionKey | Sequence[Tuple],
 ) -> List[sp.Symbol]:
     if isinstance(structure_function, sp.Symbol):
+        parsed = _parse_structure_function_string(structure_function.name)
+        if parsed is not None:
+            return _resolve_structure_function_variants(parsed)
         return [structure_function]
     if isinstance(structure_function, str):
+        parsed = _parse_structure_function_string(structure_function)
+        if parsed is not None:
+            return _resolve_structure_function_variants(parsed)
         return [sp.Symbol(structure_function)]
     if _is_compact_structure_function_spec(structure_function):
         upper_index, lower_index_a, lower_index_b = structure_function
