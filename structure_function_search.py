@@ -36,7 +36,6 @@ import sympy as sp
 
 from sparse_u_monomials import (
     differentiate_by_structure_function,
-    differentiate_sparse_coefficients,
     exponent_vector_to_monomial_expr,
     expr_to_sparse_u_poly,
 )
@@ -243,29 +242,33 @@ def search_simple_coefficients(
             continue
 
         if use_sparse:
-            # Step 2: extract sparse u-polynomial before differentiating.
+            # Step 2: differentiate by the target structure function first.
             try:
-                sparse_poly = expr_to_sparse_u_poly(minor, u_gens)
-            except Exception as exc:
-                errors.append({"extra_row": list(row), "stage": "sparse_poly", "error": str(exc)})
-                continue
-
-            # Step 3: differentiate coefficient data by the target structure function.
-            try:
-                diff_sparse_poly = differentiate_sparse_coefficients(
-                    sparse_poly,
+                diff_expr = differentiate_by_structure_function(
+                    minor,
                     structure_function,
                     order=diff_order,
                 )
             except ValueError:
-                # Align with dense mode: missing/unsupported row contribution is skipped.
+                # Structure function not present in this minor.
                 continue
 
-            if not diff_sparse_poly:
+            if diff_expr == 0:
                 continue
 
-            # Step 4: check each differentiated sparse coefficient.
-            for exponents, coeff in diff_sparse_poly.items():
+            # Step 3: convert only the differentiated expression into a sparse
+            # u-polynomial, avoiding dense global expansion.
+            try:
+                sparse_poly = expr_to_sparse_u_poly(diff_expr, u_gens)
+            except Exception as exc:
+                errors.append({"extra_row": list(row), "stage": "sparse_poly", "error": str(exc)})
+                continue
+
+            if not sparse_poly:
+                continue
+
+            # Step 4: check each sparse coefficient.
+            for exponents, coeff in sparse_poly.items():
                 total_monomials += 1
                 simple, classification = is_simple_coefficient(coeff)
                 if simple:

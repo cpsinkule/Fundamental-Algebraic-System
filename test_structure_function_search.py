@@ -104,3 +104,40 @@ def test_main_passes_sparse_flag_through_to_search(monkeypatch, capsys):
     assert captured["kwargs"]["use_sparse"] is True
     assert "System: [(1, 2), (1, 2)]" in out
     assert "No simple coefficients found." in out
+
+
+def test_sparse_mode_converts_differentiated_expression_not_full_minor(monkeypatch):
+    captured = {}
+
+    def fake_compute_minor_with_p_vars(*args, **kwargs):
+        x = sp.Symbol("u_{0,0}")
+        target = sp.Symbol("c^{(1,0)}_{(1,0),(0,0)}")
+        other = sp.Symbol("other")
+        return target * x + other, [x]
+
+    def fake_differentiate(expr, structure_function, order=1):
+        captured["diff_input"] = expr
+        return sp.Symbol("u_{0,0}") + 2
+
+    def fake_sparse(expr, u_gens, **kwargs):
+        captured["sparse_input"] = expr
+        return {
+            (1,): sp.Integer(1),
+            (0,): sp.Integer(2),
+        }
+
+    monkeypatch.setattr(sfs, "compute_minor_with_p_vars", fake_compute_minor_with_p_vars)
+    monkeypatch.setattr(sfs, "differentiate_by_structure_function", fake_differentiate)
+    monkeypatch.setattr(sfs, "expr_to_sparse_u_poly", fake_sparse)
+
+    summary = sfs.search_simple_coefficients(
+        [(1, 2), (1, 2)],
+        sp.Symbol("c^{(1,0)}_{(1,0),(0,0)}"),
+        extra_rows=[(0, 0, 1)],
+        use_sparse=True,
+    )
+
+    assert captured["diff_input"] == sp.Symbol("c^{(1,0)}_{(1,0),(0,0)}") * sp.Symbol("u_{0,0}") + sp.Symbol("other")
+    assert captured["sparse_input"] == sp.Symbol("u_{0,0}") + 2
+    assert summary.total_monomials_examined == 2
+    assert summary.total_simple_found == 2
