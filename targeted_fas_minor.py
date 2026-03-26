@@ -1127,6 +1127,50 @@ def compute_minor_with_p_vars(
     return minor
 
 
+def compute_minor_with_selected_vars(
+    char_tuples: List[Tuple[int, ...]],
+    extra_row: Tuple[int, int, int],
+    kept_vars: Optional[List[Tuple]] = None,
+    *,
+    return_u_gens: bool = False,
+) -> sp.Expr | Tuple[sp.Expr, List[sp.Symbol]]:
+    """
+    Compute a minor keeping exactly the specified u-variables alive.
+
+    All other u-variables are set to 0 after each row is computed. Unlike
+    ``compute_minor_with_p_vars``, this helper does not automatically retain
+    the p variables; the kept set is exactly ``kept_vars``.
+
+    Args:
+        char_tuples: List of characteristic tuples.
+        extra_row: (graph_idx, vertex, layer) for the extra row.
+        kept_vars: Exact list of variable keys to keep, e.g.
+                   [('vertex', 0, 0), ('edge', 1, (0, 1))].
+                   If None or empty, all u-variables are zeroed after row
+                   construction.
+        return_u_gens: If True, also return the ordered list of kept
+                       u-variables suitable for ``Poly`` construction.
+
+    Returns:
+        If return_u_gens is False: SymPy expression for the minor.
+        If return_u_gens is True: (minor_expr, u_gens).
+    """
+    exact_spec: Dict[Tuple, int] = {}
+    if kept_vars:
+        for var_key in kept_vars:
+            exact_spec[var_key] = 1
+
+    calc = FASMinorCalculator.from_characteristic_tuples(
+        char_tuples,
+        target_monomial_spec=exact_spec,
+    )
+    det_comp = DeterminantComputer(calc)
+    minor = det_comp.compute_minor_fast(*extra_row)
+    if return_u_gens:
+        return minor, det_comp.get_u_gens()
+    return minor
+
+
 def extract_monomial_coefficient(
     minor: sp.Expr,
     u_gens: List[sp.Symbol],
