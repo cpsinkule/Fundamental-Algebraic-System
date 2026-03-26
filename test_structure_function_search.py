@@ -8,6 +8,7 @@ def _finding_signature(summary: sfs.SearchSummary) -> set[tuple]:
         (
             finding.extra_row,
             str(finding.u_monomial),
+            finding.selected_vars,
             sp.srepr(finding.coefficient),
             finding.classification,
         )
@@ -81,7 +82,15 @@ def test_main_passes_sparse_flag_through_to_search(monkeypatch, capsys):
             total_extra_rows_searched=1,
             total_monomials_examined=0,
             total_simple_found=0,
-            findings=[],
+            findings=[
+                sfs.SimpleCoefficientResult(
+                    extra_row=(0, 0, 1),
+                    u_monomial=sp.Symbol("u_{0,0}"),
+                    selected_vars=(("vertex", 0, 0),),
+                    coefficient=sp.Integer(1),
+                    classification="numeric",
+                )
+            ],
             elapsed_seconds=0.0,
             errors=[],
         )
@@ -103,7 +112,7 @@ def test_main_passes_sparse_flag_through_to_search(monkeypatch, capsys):
     assert exit_code == 0
     assert captured["kwargs"]["use_sparse"] is True
     assert "System: [(1, 2), (1, 2)]" in out
-    assert "No simple coefficients found." in out
+    assert "vars=[('vertex', 0, 0)]" in out
 
 
 def test_sparse_mode_converts_differentiated_expression_not_full_minor(monkeypatch):
@@ -141,3 +150,17 @@ def test_sparse_mode_converts_differentiated_expression_not_full_minor(monkeypat
     assert captured["sparse_input"] == sp.Symbol("u_{0,0}") + 2
     assert summary.total_monomials_examined == 2
     assert summary.total_simple_found == 2
+
+
+def test_simple_coefficient_result_includes_copy_paste_selected_vars():
+    result = sfs.SimpleCoefficientResult(
+        extra_row=(0, 0, 1),
+        u_monomial=sp.Symbol("u_{0,0}") * sp.Symbol("u_{1,(0,1)}"),
+        selected_vars=(("vertex", 0, 0), ("edge", 1, (0, 1))),
+        coefficient=sp.Integer(1),
+        classification="numeric",
+    )
+
+    assert result.selected_vars_literal() == "[('vertex', 0, 0), ('edge', 1, (0, 1))]"
+    assert result.to_dict()["selected_vars_literal"] == "[('vertex', 0, 0), ('edge', 1, (0, 1))]"
+    assert result.to_dict()["selected_vars"] == [["vertex", 0, 0], ["edge", 1, [0, 1]]]

@@ -55,13 +55,19 @@ class SimpleCoefficientResult:
 
     extra_row: Tuple[int, int, int]
     u_monomial: sp.Expr
+    selected_vars: Tuple[Tuple, ...]
     coefficient: sp.Expr
     classification: str  # "numeric" or "alpha_only"
+
+    def selected_vars_literal(self) -> str:
+        return repr(list(self.selected_vars))
 
     def to_dict(self) -> dict:
         return {
             "extra_row": list(self.extra_row),
             "u_monomial": str(self.u_monomial),
+            "selected_vars": _tuple_to_jsonable(self.selected_vars),
+            "selected_vars_literal": self.selected_vars_literal(),
             "coefficient": str(self.coefficient),
             "coefficient_srepr": sp.srepr(self.coefficient),
             "classification": self.classification,
@@ -104,6 +110,41 @@ def _is_structure_function_symbol(symbol: sp.Symbol) -> bool:
 
 def _is_alpha_symbol(symbol: sp.Symbol) -> bool:
     return symbol.name.startswith("α_{") or symbol.name.startswith("α_")
+
+
+def _tuple_to_jsonable(value):
+    if isinstance(value, tuple):
+        return [_tuple_to_jsonable(item) for item in value]
+    if isinstance(value, list):
+        return [_tuple_to_jsonable(item) for item in value]
+    return value
+
+
+def _u_symbol_to_var_key(symbol: sp.Symbol) -> Tuple:
+    name = symbol.name
+    if not name.startswith("u_{") or not name.endswith("}"):
+        raise ValueError(f"Unsupported u-generator symbol name: {name}")
+    inner = name[3:-1]
+    if ",(" in inner:
+        graph_str, edge_str = inner.split(",", 1)
+        graph_idx = int(graph_str)
+        if not edge_str.startswith("(") or not edge_str.endswith(")"):
+            raise ValueError(f"Unsupported edge u-generator symbol name: {name}")
+        src_str, tgt_str = edge_str[1:-1].split(",")
+        return ("edge", graph_idx, (int(src_str), int(tgt_str)))
+    graph_str, vertex_str = inner.split(",")
+    return ("vertex", int(graph_str), int(vertex_str))
+
+
+def _selected_vars_from_monomial(
+    exponents: Sequence[int],
+    u_gens: Sequence[sp.Symbol],
+) -> Tuple[Tuple, ...]:
+    selected_vars = []
+    for exponent, symbol in zip(exponents, u_gens):
+        if exponent:
+            selected_vars.append(_u_symbol_to_var_key(symbol))
+    return tuple(selected_vars)
 
 
 def is_simple_coefficient(expr: sp.Expr) -> Tuple[bool, str]:
@@ -275,6 +316,7 @@ def search_simple_coefficients(
                     result = SimpleCoefficientResult(
                         extra_row=row,
                         u_monomial=exponent_vector_to_monomial_expr(exponents, u_gens),
+                        selected_vars=_selected_vars_from_monomial(exponents, u_gens),
                         coefficient=coeff,
                         classification=classification,
                     )
@@ -310,6 +352,7 @@ def search_simple_coefficients(
                     result = SimpleCoefficientResult(
                         extra_row=row,
                         u_monomial=exponent_vector_to_monomial_expr(monom_tuple, u_gens),
+                        selected_vars=_selected_vars_from_monomial(monom_tuple, u_gens),
                         coefficient=coeff,
                         classification=classification,
                     )
@@ -414,7 +457,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     def _live_finding(result: SimpleCoefficientResult) -> None:
         finding_count[0] += 1
         print(f"  [{finding_count[0]}] Row {result.extra_row}: "
-              f"{result.u_monomial} -> {result.coefficient} [{result.classification}]",
+              f"{result.u_monomial} vars={result.selected_vars_literal()} "
+              f"-> {result.coefficient} [{result.classification}]",
               flush=True)
 
     summary = search_simple_coefficients(
@@ -443,7 +487,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if summary.findings:
         print(f"\nFindings ({summary.total_simple_found}):")
         for f in summary.findings:
-            print(f"  Row {f.extra_row}: {f.u_monomial} -> {f.coefficient} [{f.classification}]")
+            print(
+                f"  Row {f.extra_row}: {f.u_monomial} "
+                f"vars={f.selected_vars_literal()} -> {f.coefficient} [{f.classification}]"
+            )
     else:
         print("\nNo simple coefficients found.")
 
