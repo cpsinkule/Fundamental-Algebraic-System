@@ -36,7 +36,9 @@ import sympy as sp
 
 from sparse_u_monomials import (
     differentiate_by_structure_function,
-    structure_function_symbol,
+    differentiate_sparse_coefficients,
+    exponent_vector_to_monomial_expr,
+    expr_to_sparse_u_poly,
 )
 from targeted_fas_minor import ComponentGraph, compute_minor_with_p_vars
 
@@ -179,6 +181,7 @@ def search_simple_coefficients(
     structure_function: StructureFunctionSpec,
     *,
     diff_order: int = 1,
+    use_sparse: bool = False,
     extra_rows: Optional[List[Tuple[int, int, int]]] = None,
     progress_callback: Optional[Callable[[int, int, Tuple[int, int, int]], None]] = None,
     finding_callback: Optional[Callable[[SimpleCoefficientResult], None]] = None,
@@ -196,6 +199,9 @@ def search_simple_coefficients(
         structure_function: Target structure function (symbol, string, or
             compact index spec accepted by sparse_u_monomials).
         diff_order: Differentiation order (default 1).
+        use_sparse: If True, convert minors into sparse u-polynomials and
+            differentiate coefficients directly instead of using
+            ``sp.expand`` + ``sp.Poly``.
         extra_rows: Explicit list of extra rows. If None, uses
             enumerate_row_complements for component 0.
         progress_callback: Optional (current, total, extra_row) -> None.
@@ -236,45 +242,77 @@ def search_simple_coefficients(
         if minor == 0:
             continue
 
-        # Step 2: differentiate by the target structure function
-        try:
-            diff_expr = differentiate_by_structure_function(
-                minor, structure_function, order=diff_order,
-            )
-        except ValueError:
-            # Structure function not present in this minor
-            continue
+        if use_sparse:
+            # Step 2: extract sparse u-polynomial before differentiating.
+            try:
+                sparse_poly = expr_to_sparse_u_poly(minor, u_gens)
+            except Exception as exc:
+                errors.append({"extra_row": list(row), "stage": "sparse_poly", "error": str(exc)})
+                continue
 
-        if diff_expr == 0:
-            continue
-
-        # Step 3: expand into Poly to extract monomials and coefficients
-        try:
-            expanded = sp.expand(diff_expr)
-            poly = sp.Poly(expanded, *u_gens, domain="EX")
-        except Exception as exc:
-            errors.append({"extra_row": list(row), "stage": "poly", "error": str(exc)})
-            continue
-
-        # Step 4: check each coefficient
-        for monom_tuple, coeff in poly.as_dict().items():
-            total_monomials += 1
-            simple, classification = is_simple_coefficient(coeff)
-            if simple:
-                # Reconstruct monomial expression
-                u_monomial = sp.Integer(1)
-                for sym, exp in zip(u_gens, monom_tuple):
-                    if exp:
-                        u_monomial *= sym ** exp
-                result = SimpleCoefficientResult(
-                    extra_row=row,
-                    u_monomial=u_monomial,
-                    coefficient=coeff,
-                    classification=classification,
+            # Step 3: differentiate coefficient data by the target structure function.
+            try:
+                diff_sparse_poly = differentiate_sparse_coefficients(
+                    sparse_poly,
+                    structure_function,
+                    order=diff_order,
                 )
-                findings.append(result)
-                if finding_callback:
-                    finding_callback(result)
+            except ValueError:
+                # Align with dense mode: missing/unsupported row contribution is skipped.
+                continue
+
+            if not diff_sparse_poly:
+                continue
+
+            # Step 4: check each differentiated sparse coefficient.
+            for exponents, coeff in diff_sparse_poly.items():
+                total_monomials += 1
+                simple, classification = is_simple_coefficient(coeff)
+                if simple:
+                    result = SimpleCoefficientResult(
+                        extra_row=row,
+                        u_monomial=exponent_vector_to_monomial_expr(exponents, u_gens),
+                        coefficient=coeff,
+                        classification=classification,
+                    )
+                    findings.append(result)
+                    if finding_callback:
+                        finding_callback(result)
+        else:
+            # Step 2: differentiate by the target structure function
+            try:
+                diff_expr = differentiate_by_structure_function(
+                    minor, structure_function, order=diff_order,
+                )
+            except ValueError:
+                # Structure function not present in this minor
+                continue
+
+            if diff_expr == 0:
+                continue
+
+            # Step 3: expand into Poly to extract monomials and coefficients
+            try:
+                expanded = sp.expand(diff_expr)
+                poly = sp.Poly(expanded, *u_gens, domain="EX")
+            except Exception as exc:
+                errors.append({"extra_row": list(row), "stage": "poly", "error": str(exc)})
+                continue
+
+            # Step 4: check each coefficient
+            for monom_tuple, coeff in poly.as_dict().items():
+                total_monomials += 1
+                simple, classification = is_simple_coefficient(coeff)
+                if simple:
+                    result = SimpleCoefficientResult(
+                        extra_row=row,
+                        u_monomial=exponent_vector_to_monomial_expr(monom_tuple, u_gens),
+                        coefficient=coeff,
+                        classification=classification,
+                    )
+                    findings.append(result)
+                    if finding_callback:
+                        finding_callback(result)
 
     elapsed = time.monotonic() - t0
 
@@ -352,6 +390,10 @@ Examples:
         "--live", action="store_true",
         help="Print each result as it is found.",
     )
+    parser.add_argument(
+        "--sparse", action="store_true",
+        help="Use sparse u-polynomial extraction instead of dense expand+Poly.",
+    )
     return parser
 
 
@@ -376,6 +418,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         char_tuples,
         sf_symbol,
         diff_order=args.diff_order,
+        use_sparse=args.sparse,
         progress_callback=callback,
         finding_callback=_live_finding if args.live else None,
     )
