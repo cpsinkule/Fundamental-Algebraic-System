@@ -60,3 +60,19 @@ def test_compute_minor_with_selected_vars_keeps_only_requested_u_symbols():
     assert [s.name for s in u_gens] == ["u_{0,(0,1)}"]
     remaining_u = {s.name for s in minor.free_symbols if s.name.startswith("u_{")}
     assert remaining_u <= {"u_{0,(0,1)}"}
+
+
+def test_compute_minor_with_selected_vars_empty_keep_set_zeros_all_u_variables():
+    char_tuples = [(1, 2)]
+    extra_row = (0, 0, 1)
+
+    minor, u_gens = compute_minor_with_selected_vars(
+        char_tuples,
+        extra_row,
+        kept_vars=[],
+        return_u_gens=True,
+    )
+
+    assert u_gens == []
+    remaining_u = [s for s in minor.free_symbols if s.name.startswith("u_{")]
+    assert remaining_u == []

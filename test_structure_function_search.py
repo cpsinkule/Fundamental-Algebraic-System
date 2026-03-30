@@ -9,6 +9,7 @@ def _finding_signature(summary: sfs.SearchSummary) -> set[tuple]:
             finding.extra_row,
             str(finding.u_monomial),
             finding.selected_vars,
+            finding.monomial_cli,
             sp.srepr(finding.coefficient),
             finding.classification,
         )
@@ -87,6 +88,7 @@ def test_main_passes_sparse_flag_through_to_search(monkeypatch, capsys):
                     extra_row=(0, 0, 1),
                     u_monomial=sp.Symbol("u_{0,0}"),
                     selected_vars=(("vertex", 0, 0),),
+                    monomial_cli="v:0,0",
                     coefficient=sp.Integer(1),
                     classification="numeric",
                 )
@@ -157,6 +159,7 @@ def test_simple_coefficient_result_includes_copy_paste_selected_vars():
         extra_row=(0, 0, 1),
         u_monomial=sp.Symbol("u_{0,0}") * sp.Symbol("u_{1,(0,1)}"),
         selected_vars=(("vertex", 0, 0), ("edge", 1, (0, 1))),
+        monomial_cli="v:0,0;e:1,(0,1)",
         coefficient=sp.Integer(1),
         classification="numeric",
     )
@@ -164,3 +167,63 @@ def test_simple_coefficient_result_includes_copy_paste_selected_vars():
     assert result.selected_vars_literal() == "[('vertex', 0, 0), ('edge', 1, (0, 1))]"
     assert result.to_dict()["selected_vars_literal"] == "[('vertex', 0, 0), ('edge', 1, (0, 1))]"
     assert result.to_dict()["selected_vars"] == [["vertex", 0, 0], ["edge", 1, [0, 1]]]
+    assert result.to_dict()["monomial_cli"] == "v:0,0;e:1,(0,1)"
+
+
+def test_monomial_cli_from_monomial_preserves_exponents():
+    u_gens = [
+        sp.Symbol("u_{0,0}"),
+        sp.Symbol("u_{0,1}"),
+        sp.Symbol("u_{1,(0,1)}"),
+    ]
+
+    cli = sfs._monomial_cli_from_monomial((3, 2, 1), u_gens)
+
+    assert cli == "v:0,0:3;v:0,1:2;e:1,(0,1)"
+
+
+def test_live_targeted_command_prints_copy_paste_command(monkeypatch, capsys):
+    def fake_search_simple_coefficients(*args, **kwargs):
+        finding_callback = kwargs["finding_callback"]
+        finding_callback(
+            sfs.SimpleCoefficientResult(
+                extra_row=(0, 0, 2),
+                u_monomial=sp.Symbol("u_{0,0}"),
+                selected_vars=(("vertex", 0, 0),),
+                monomial_cli="v:0,0:3;e:1,(0,1)",
+                coefficient=sp.Integer(1),
+                classification="numeric",
+            )
+        )
+        return sfs.SearchSummary(
+            char_tuples=[(3, 1, 5), (2, 1, 3)],
+            target_structure_function="c^{1,(0,1)}_{(0,(1,2)),(0,2)}",
+            diff_order=1,
+            total_extra_rows_searched=1,
+            total_monomials_examined=1,
+            total_simple_found=1,
+            findings=[],
+            elapsed_seconds=0.0,
+            errors=[],
+        )
+
+    monkeypatch.setattr(sfs, "search_simple_coefficients", fake_search_simple_coefficients)
+
+    exit_code = sfs.main(
+        [
+            "--tuples",
+            "3,1,5;2,1,3",
+            "--structure-function",
+            "c^{1,(0,1)}_{(0,(1,2)),(0,2)}",
+            "--live",
+            "--live-targeted-command",
+            "--quiet",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert (
+        'python targeted_fas_minor.py --tuples "3,1,5;2,1,3" '
+        '--row "0,0,2" --monomial "v:0,0:3;e:1,(0,1)" --coeff-mode exact'
+    ) in out

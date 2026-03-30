@@ -56,6 +56,7 @@ class SimpleCoefficientResult:
     extra_row: Tuple[int, int, int]
     u_monomial: sp.Expr
     selected_vars: Tuple[Tuple, ...]
+    monomial_cli: str
     coefficient: sp.Expr
     classification: str  # "numeric" or "alpha_only"
 
@@ -68,6 +69,7 @@ class SimpleCoefficientResult:
             "u_monomial": str(self.u_monomial),
             "selected_vars": _tuple_to_jsonable(self.selected_vars),
             "selected_vars_literal": self.selected_vars_literal(),
+            "monomial_cli": self.monomial_cli,
             "coefficient": str(self.coefficient),
             "coefficient_srepr": sp.srepr(self.coefficient),
             "classification": self.classification,
@@ -145,6 +147,30 @@ def _selected_vars_from_monomial(
         if exponent:
             selected_vars.append(_u_symbol_to_var_key(symbol))
     return tuple(selected_vars)
+
+
+def _monomial_cli_from_monomial(
+    exponents: Sequence[int],
+    u_gens: Sequence[sp.Symbol],
+) -> str:
+    parts = []
+    for exponent, symbol in zip(exponents, u_gens):
+        if not exponent:
+            continue
+        kind, graph_idx, local_id = _u_symbol_to_var_key(symbol)
+        if kind == "vertex":
+            part = f"v:{graph_idx},{local_id}"
+        else:
+            src, tgt = local_id
+            part = f"e:{graph_idx},({src},{tgt})"
+        if exponent != 1:
+            part += f":{exponent}"
+        parts.append(part)
+    return ";".join(parts)
+
+
+def _format_char_tuples_arg(char_tuples: Sequence[Tuple[int, ...]]) -> str:
+    return ";".join(",".join(str(value) for value in tup) for tup in char_tuples)
 
 
 def is_simple_coefficient(expr: sp.Expr) -> Tuple[bool, str]:
@@ -317,6 +343,7 @@ def search_simple_coefficients(
                         extra_row=row,
                         u_monomial=exponent_vector_to_monomial_expr(exponents, u_gens),
                         selected_vars=_selected_vars_from_monomial(exponents, u_gens),
+                        monomial_cli=_monomial_cli_from_monomial(exponents, u_gens),
                         coefficient=coeff,
                         classification=classification,
                     )
@@ -353,6 +380,7 @@ def search_simple_coefficients(
                         extra_row=row,
                         u_monomial=exponent_vector_to_monomial_expr(monom_tuple, u_gens),
                         selected_vars=_selected_vars_from_monomial(monom_tuple, u_gens),
+                        monomial_cli=_monomial_cli_from_monomial(monom_tuple, u_gens),
                         coefficient=coeff,
                         classification=classification,
                     )
@@ -437,6 +465,11 @@ Examples:
         help="Print each result as it is found.",
     )
     parser.add_argument(
+        "--live-targeted-command",
+        action="store_true",
+        help="With --live, print a copy-paste targeted_fas_minor.py command for each finding.",
+    )
+    parser.add_argument(
         "--sparse", action="store_true",
         help="Use sparse u-polynomial extraction instead of dense expand+Poly.",
     )
@@ -453,13 +486,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     callback = None if args.quiet else _stderr_progress
 
     finding_count = [0]
+    tuples_arg = _format_char_tuples_arg(char_tuples)
 
     def _live_finding(result: SimpleCoefficientResult) -> None:
         finding_count[0] += 1
-        print(f"  [{finding_count[0]}] Row {result.extra_row}: "
-              f"{result.u_monomial} vars={result.selected_vars_literal()} "
-              f"-> {result.coefficient} [{result.classification}]",
-              flush=True)
+        if args.live_targeted_command:
+            row_arg = ",".join(str(value) for value in result.extra_row)
+            print(
+                f'python targeted_fas_minor.py --tuples "{tuples_arg}" '
+                f'--row "{row_arg}" --monomial "{result.monomial_cli}" --coeff-mode exact',
+                flush=True,
+            )
+            return
+        print(
+            f"  [{finding_count[0]}] Row {result.extra_row}: "
+            f"{result.u_monomial} vars={result.selected_vars_literal()} "
+            f"-> {result.coefficient} [{result.classification}]",
+            flush=True,
+        )
 
     summary = search_simple_coefficients(
         char_tuples,

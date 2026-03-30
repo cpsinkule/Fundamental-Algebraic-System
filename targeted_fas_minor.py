@@ -181,6 +181,7 @@ class FASMinorCalculator:
 
         # Store target monomial spec for deferred post-row zeroing
         self.target_monomial_spec = target_monomial_spec
+        self._has_target_filter = target_monomial_spec is not None
         self._target_var_keys = self._parse_monomial_keys(target_monomial_spec)
 
         self._initialize_symbolic_variables()
@@ -198,7 +199,7 @@ class FASMinorCalculator:
             Set of variable keys to KEEP (not zero out).
         """
         if spec is None:
-            return set()  # No filtering - all variables are symbols
+            return set()
         keys = set()
         for key, exp in spec.items():
             if exp <= 0:
@@ -223,7 +224,7 @@ class FASMinorCalculator:
         Returns:
             True to create a symbol, False to create sp.Integer(0)
         """
-        if not self._target_var_keys:
+        if not self._has_target_filter:
             return True  # No filtering, create all symbols
         return (kind, g_idx, local_id) in self._target_var_keys
 
@@ -277,7 +278,7 @@ class FASMinorCalculator:
 
         # Build post-computation substitution dict for targeted zeroing
         self._zero_subs: Dict[sp.Symbol, sp.Expr] = {}
-        if self._target_var_keys:
+        if self._has_target_filter:
             for g_idx, graph in enumerate(self.graphs):
                 for vertex in graph.vertices:
                     if not self._should_create_symbol('vertex', g_idx, vertex):
