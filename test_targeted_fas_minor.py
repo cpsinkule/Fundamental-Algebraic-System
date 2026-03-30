@@ -1,6 +1,11 @@
 import sympy as sp
 
-from targeted_fas_minor import compute_minor_with_p_vars, compute_minor_with_selected_vars
+from targeted_fas_minor import (
+    compute_minor_with_p_vars,
+    compute_minor_with_selected_vars,
+    format_monomial_spec,
+    parse_monomial_spec,
+)
 
 
 def test_compute_minor_with_p_vars_can_return_u_gens():
@@ -76,3 +81,23 @@ def test_compute_minor_with_selected_vars_empty_keep_set_zeros_all_u_variables()
     assert u_gens == []
     remaining_u = [s for s in minor.free_symbols if s.name.startswith("u_{")]
     assert remaining_u == []
+
+
+def test_parse_and_format_monomial_spec_round_trip():
+    monomial_cli = "v:0,0:3;v:1,2;e:0,(1,3):2;e:1,(0,1)"
+
+    parsed = parse_monomial_spec(monomial_cli)
+    formatted = format_monomial_spec(parsed)
+
+    assert parsed == {
+        ("vertex", 0, 0): 3,
+        ("vertex", 1, 2): 1,
+        ("edge", 0, (1, 3)): 2,
+        ("edge", 1, (0, 1)): 1,
+    }
+    assert parse_monomial_spec(formatted) == parsed
+
+
+def test_parse_and_format_constant_monomial_spec():
+    assert parse_monomial_spec("1") == {}
+    assert format_monomial_spec({}) == "1"

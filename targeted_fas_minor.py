@@ -1251,7 +1251,7 @@ def _parse_tuples(s: str) -> List[Tuple[int, ...]]:
         raise
 
 
-def _parse_monomial(s: str) -> Dict[Tuple, int]:
+def parse_monomial_spec(s: str) -> Dict[Tuple, int]:
     """
     Parse monomial spec from string format.
 
@@ -1274,6 +1274,8 @@ def _parse_monomial(s: str) -> Dict[Tuple, int]:
     """
     if not s or not s.strip():
         raise ValueError("Empty monomial specification")
+    if s.strip() == "1":
+        return {}
 
     spec: Dict[Tuple, int] = {}
     for part in s.split(';'):
@@ -1353,6 +1355,53 @@ def _parse_monomial(s: str) -> Dict[Tuple, int]:
     return spec
 
 
+def format_monomial_spec(monomial_spec: Dict[Tuple, int]) -> str:
+    """
+    Format a monomial specification dict into CLI string form.
+
+    The output is compatible with ``parse_monomial_spec`` and ordered
+    deterministically: vertices first, then edges.
+    """
+    if not monomial_spec:
+        return "1"
+
+    parts = []
+    items = sorted(
+        monomial_spec.items(),
+        key=lambda item: (
+            0 if item[0][0] == 'vertex' else 1,
+            item[0][1],
+            item[0][2] if item[0][0] == 'vertex' else item[0][2][0],
+            -1 if item[0][0] == 'vertex' else item[0][2][1],
+        ),
+    )
+    for key, exponent in items:
+        if exponent <= 0:
+            continue
+        kind, graph_idx, local_id = key
+        if kind == 'vertex':
+            part = f"v:{graph_idx},{local_id}"
+        elif kind == 'edge':
+            src, tgt = local_id
+            part = f"e:{graph_idx},({src},{tgt})"
+        else:
+            raise ValueError(
+                f"Invalid monomial key format: {key}. Expected ('vertex', g, v) or ('edge', g, (src, tgt))"
+            )
+        if exponent != 1:
+            part += f":{exponent}"
+        parts.append(part)
+
+    if not parts:
+        return "1"
+    return ";".join(parts)
+
+
+def _parse_monomial(s: str) -> Dict[Tuple, int]:
+    """Backward-compatible wrapper for existing internal callers."""
+    return parse_monomial_spec(s)
+
+
 # ----------------------------------- CLI -------------------------------------
 def main() -> None:
     ap = argparse.ArgumentParser(
@@ -1412,7 +1461,7 @@ Monomial format:
     monomial_spec = None
     if args.monomial:
         try:
-            monomial_spec = _parse_monomial(args.monomial)
+            monomial_spec = parse_monomial_spec(args.monomial)
         except ValueError as e:
             ap.error(f"Error parsing --monomial: {e}")
 

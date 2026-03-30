@@ -1,4 +1,5 @@
 import sympy as sp
+import json
 
 import structure_function_search as sfs
 
@@ -227,3 +228,68 @@ def test_live_targeted_command_prints_copy_paste_command(monkeypatch, capsys):
         'python targeted_fas_minor.py --tuples "3,1,5;2,1,3" '
         '--row "0,0,2" --monomial "v:0,0:3;e:1,(0,1)" --coeff-mode exact'
     ) in out
+
+
+def test_task_output_writes_deduplicated_task_artifact(tmp_path, monkeypatch, capsys):
+    summary_path = tmp_path / "summary.json"
+    task_path = tmp_path / "tasks.json"
+
+    def fake_search_simple_coefficients(*args, **kwargs):
+        repeated = sfs.SimpleCoefficientResult(
+            extra_row=(0, 0, 2),
+            u_monomial=sp.Symbol("u_{0,0}")**2,
+            selected_vars=(("vertex", 0, 0),),
+            monomial_cli="v:0,0:2",
+            coefficient=sp.Symbol("α_{0}"),
+            classification="alpha_only",
+        )
+        distinct = sfs.SimpleCoefficientResult(
+            extra_row=(0, 1, 2),
+            u_monomial=sp.Symbol("u_{0,1}"),
+            selected_vars=(("vertex", 0, 1),),
+            monomial_cli="v:0,1",
+            coefficient=sp.Integer(2),
+            classification="numeric",
+        )
+        return sfs.SearchSummary(
+            char_tuples=[(3, 1, 5), (2, 1, 3)],
+            target_structure_function="c^{1,(0,1)}_{(0,(1,2)),(0,2)}",
+            diff_order=1,
+            total_extra_rows_searched=2,
+            total_monomials_examined=3,
+            total_simple_found=3,
+            findings=[repeated, repeated, distinct],
+            elapsed_seconds=0.0,
+            errors=[],
+        )
+
+    monkeypatch.setattr(sfs, "search_simple_coefficients", fake_search_simple_coefficients)
+
+    exit_code = sfs.main(
+        [
+            "--tuples",
+            "3,1,5;2,1,3",
+            "--structure-function",
+            "c^{1,(0,1)}_{(0,(1,2)),(0,2)}",
+            "--output",
+            str(summary_path),
+            "--task-output",
+            str(task_path),
+            "--quiet",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    with open(summary_path, "r", encoding="utf-8") as fp:
+        summary_payload = json.load(fp)
+    with open(task_path, "r", encoding="utf-8") as fp:
+        task_payload = json.load(fp)
+
+    assert exit_code == 0
+    assert summary_payload["total_simple_found"] == 3
+    assert task_payload["artifact_type"] == "monomial_pair_tasks"
+    assert task_payload["source_summary_path"] == str(summary_path)
+    assert task_payload["total_tasks"] == 2
+    assert [task["monomial_cli"] for task in task_payload["tasks"]] == ["v:0,0:2", "v:0,1"]
+    assert task_payload["tasks"][0]["source_finding_count"] == 2
+    assert "Task artifact written to" in out

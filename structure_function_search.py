@@ -26,11 +26,12 @@ CLI usage:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import sympy as sp
 
@@ -39,7 +40,7 @@ from sparse_u_monomials import (
     exponent_vector_to_monomial_expr,
     expr_to_sparse_u_poly,
 )
-from targeted_fas_minor import ComponentGraph, compute_minor_with_p_vars
+from targeted_fas_minor import ComponentGraph, compute_minor_with_p_vars, format_monomial_spec
 
 
 # ----------------------------- Type aliases ----------------------------------
@@ -106,6 +107,9 @@ class SearchSummary:
 
 # ----------------------------- Helpers ---------------------------------------
 
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
 def _is_structure_function_symbol(symbol: sp.Symbol) -> bool:
     return symbol.name.startswith("c^{")
 
@@ -149,28 +153,72 @@ def _selected_vars_from_monomial(
     return tuple(selected_vars)
 
 
+def _monomial_spec_from_monomial(
+    exponents: Sequence[int],
+    u_gens: Sequence[sp.Symbol],
+) -> Dict[Tuple, int]:
+    monomial_spec: Dict[Tuple, int] = {}
+    for exponent, symbol in zip(exponents, u_gens):
+        if not exponent:
+            continue
+        monomial_spec[_u_symbol_to_var_key(symbol)] = exponent
+    return monomial_spec
+
+
 def _monomial_cli_from_monomial(
     exponents: Sequence[int],
     u_gens: Sequence[sp.Symbol],
 ) -> str:
-    parts = []
-    for exponent, symbol in zip(exponents, u_gens):
-        if not exponent:
-            continue
-        kind, graph_idx, local_id = _u_symbol_to_var_key(symbol)
-        if kind == "vertex":
-            part = f"v:{graph_idx},{local_id}"
-        else:
-            src, tgt = local_id
-            part = f"e:{graph_idx},({src},{tgt})"
-        if exponent != 1:
-            part += f":{exponent}"
-        parts.append(part)
-    return ";".join(parts)
+    return format_monomial_spec(_monomial_spec_from_monomial(exponents, u_gens))
 
 
 def _format_char_tuples_arg(char_tuples: Sequence[Tuple[int, ...]]) -> str:
     return ";".join(",".join(str(value) for value in tup) for tup in char_tuples)
+
+
+def build_task_artifact(
+    summary: SearchSummary,
+    *,
+    source_summary_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    task_index: Dict[Tuple[Tuple[int, int, int], str], Dict[str, Any]] = {}
+    for idx, finding in enumerate(summary.findings):
+        key = (tuple(finding.extra_row), finding.monomial_cli)
+        entry = task_index.get(key)
+        if entry is None:
+            entry = {
+                "extra_row": list(finding.extra_row),
+                "u_monomial": str(finding.u_monomial),
+                "monomial_cli": finding.monomial_cli,
+                "selected_vars": _tuple_to_jsonable(finding.selected_vars),
+                "source_finding_indices": [],
+                "source_classifications": [],
+                "source_coefficients": [],
+            }
+            task_index[key] = entry
+        entry["source_finding_indices"].append(idx)
+        if finding.classification not in entry["source_classifications"]:
+            entry["source_classifications"].append(finding.classification)
+        coeff_str = str(finding.coefficient)
+        if coeff_str not in entry["source_coefficients"]:
+            entry["source_coefficients"].append(coeff_str)
+
+    tasks = list(task_index.values())
+    tasks.sort(key=lambda entry: (entry["extra_row"], entry["monomial_cli"]))
+    for entry in tasks:
+        entry["source_finding_count"] = len(entry["source_finding_indices"])
+
+    artifact = {
+        "artifact_type": "monomial_pair_tasks",
+        "generated_at": _utc_timestamp(),
+        "char_tuples": [list(t) for t in summary.char_tuples],
+        "target_structure_function": summary.target_structure_function,
+        "diff_order": summary.diff_order,
+        "source_summary_path": source_summary_path,
+        "total_tasks": len(tasks),
+        "tasks": tasks,
+    }
+    return artifact
 
 
 def is_simple_coefficient(expr: sp.Expr) -> Tuple[bool, str]:
@@ -457,6 +505,10 @@ Examples:
         help="Output JSON file path.",
     )
     parser.add_argument(
+        "--task-output", default=None,
+        help="Optional JSON file path for deduplicated monomial/extra-row tasks.",
+    )
+    parser.add_argument(
         "--quiet", "-q", action="store_true",
         help="Suppress progress output.",
     )
@@ -543,6 +595,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             json.dump(summary.to_dict(), fp, indent=2)
         print(f"\nResults written to {args.output}")
 
+    if args.task_output:
+        task_artifact = build_task_artifact(summary, source_summary_path=args.output)
+        with open(args.task_output, "w", encoding="utf-8") as fp:
+            json.dump(task_artifact, fp, indent=2)
+        print(f"Task artifact written to {args.task_output}")
+
     return 0
 
 
@@ -551,6 +609,7 @@ __all__ = [
     "SearchSummary",
     "enumerate_row_complements",
     "build_all_vars",
+    "build_task_artifact",
     "is_simple_coefficient",
     "search_simple_coefficients",
 ]
