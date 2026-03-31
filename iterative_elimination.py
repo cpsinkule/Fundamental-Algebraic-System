@@ -136,20 +136,62 @@ def _is_structure_function_symbol(symbol: sp.Symbol) -> bool:
     return symbol.name.startswith("c^{")
 
 
+def _is_sole_sf_in_coefficient(
+    exact_coeff: sp.Expr,
+    target_sf_name: str,
+) -> Tuple[bool, str]:
+    """Check if the target SF is the only structure function in the coefficient.
+
+    Returns:
+        (is_sole, classification) where classification is:
+        - "sole_sf_numeric": target SF * numeric factor
+        - "sole_sf_alpha": target SF * alpha/numeric factors
+        - "no_sf": no structure functions at all (coefficient is simple without SF)
+        - "multiple_sfs": other structure functions present alongside target
+        - "target_absent": target SF is not present
+    """
+    free = exact_coeff.free_symbols
+    sf_symbols = {s for s in free if _is_structure_function_symbol(s)}
+
+    if not sf_symbols:
+        return False, "no_sf"
+
+    if target_sf_name not in {s.name for s in sf_symbols}:
+        return False, "target_absent"
+
+    if len(sf_symbols) == 1:
+        # Only one SF present — must be the target
+        non_sf = free - sf_symbols
+        if not non_sf:
+            return True, "sole_sf_numeric"
+        if all(s.name.startswith("α_") or s.name.startswith("α_{") for s in non_sf):
+            return True, "sole_sf_alpha"
+        return True, "sole_sf_numeric"  # other symbols are fine (constants etc.)
+
+    return False, "multiple_sfs"
+
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class VanishingEvidence:
-    """Evidence that a structure function vanishes."""
+    """Evidence that a structure function vanishes.
+
+    The exact_coefficient is the coefficient of the u-monomial in the
+    original (un-differentiated) minor.  The target SF must be its only
+    structure-function factor for the vanishing argument to hold.
+    """
 
     sf_name: str
     extra_row: Tuple[int, int, int]
     u_monomial: str
     monomial_cli: str
-    coefficient: str
-    classification: str  # "numeric" or "alpha_only"
+    exact_coefficient: str          # exact coeff from original minor
+    exact_classification: str       # "sole_sf_numeric" or "sole_sf_alpha"
+    diff_coefficient: str           # coeff from differentiated minor (prefilter)
+    diff_classification: str        # "numeric" or "alpha_only"
     wave: int
     sub_wave: int  # 0 = initial pass, 1+ = intra-wave re-check
 
@@ -159,8 +201,10 @@ class VanishingEvidence:
             "extra_row": list(self.extra_row),
             "u_monomial": self.u_monomial,
             "monomial_cli": self.monomial_cli,
-            "coefficient": self.coefficient,
-            "classification": self.classification,
+            "exact_coefficient": self.exact_coefficient,
+            "exact_classification": self.exact_classification,
+            "diff_coefficient": self.diff_coefficient,
+            "diff_classification": self.diff_classification,
             "wave": self.wave,
             "sub_wave": self.sub_wave,
         }
@@ -321,19 +365,57 @@ def _compute_minor_with_sf_injection(
     return minor, u_gens
 
 
+def _compute_exact_coefficient_with_sf_injection(
+    char_tuples: List[Tuple[int, ...]],
+    extra_row: Tuple[int, int, int],
+    monomial_spec: Dict[Tuple, int],
+    vanished_sf_keys: List[Tuple],
+) -> sp.Expr:
+    """Compute exact coefficient of a monomial in the original minor.
+
+    Adapted from compute_monomial_coefficient but supports SF injection.
+    Uses targeted variable zeroing (only monomial vars kept) for efficiency,
+    plus vanished SF pre-zeroing.
+
+    Args:
+        char_tuples: System characteristic tuples.
+        extra_row: (graph_idx, vertex, layer) for the extra row.
+        monomial_spec: Target monomial, e.g. {('vertex', 0, 0): 1, ...}.
+        vanished_sf_keys: List of 6-tuple SF keys to pre-zero.
+
+    Returns:
+        SymPy expression for the exact coefficient.
+    """
+    calc = FASMinorCalculator.from_characteristic_tuples(
+        char_tuples,
+        target_monomial_spec=monomial_spec,
+    )
+
+    # Inject vanished SF zeros BEFORE row computation
+    for sf_key in vanished_sf_keys:
+        calc.structure_functions_symbolic[sf_key] = 0
+
+    det_comp = DeterminantComputer(calc)
+    minor = det_comp.compute_minor_fast(*extra_row)
+    return det_comp.coeff_of_monomial(minor, monomial_spec, match='exact')
+
+
 # ---------------------------------------------------------------------------
 # Pending coefficient storage (for sub-wave re-checking)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _PendingCoeff:
-    """A monomial coefficient that is not yet simple."""
+    """A candidate monomial whose exact coefficient has multiple SFs."""
     sf_name: str
     extra_row: Tuple[int, int, int]
     exponents: Tuple[int, ...]
     u_gens: List[sp.Symbol]
-    coefficient: sp.Expr
-    sf_symbols_in_coeff: FrozenSet[str]
+    monomial_spec: Dict[Tuple, int]
+    exact_coefficient: sp.Expr       # from original minor (not differentiated)
+    diff_coefficient: sp.Expr        # from differentiated minor (prefilter)
+    diff_classification: str         # classification from prefilter
+    sf_symbols_in_exact: FrozenSet[str]  # SF names in the exact coefficient
 
 
 # ---------------------------------------------------------------------------
@@ -354,9 +436,14 @@ def _process_wave(
 ) -> WaveResult:
     """Process a single root group wave.
 
-    For each extra row, computes the minor (with prior vanished SFs zeroed),
-    then differentiates by each target SF and classifies coefficients.
-    Runs sub-wave iterations on pending coefficients until convergence.
+    Two-stage process per (extra_row, SF):
+      1. PREFILTER: differentiate minor by SF, check if any u-monomial
+         coefficient is simple (fast, but can give false positives).
+      2. EXACT VERIFICATION: for each prefilter candidate, compute the exact
+         coefficient of that u-monomial in the original (un-differentiated)
+         minor.  Confirm the target SF is the sole structure function in it.
+
+    Runs sub-wave iterations on pending exact coefficients until convergence.
     """
     sf_name_to_symbol: Dict[str, sp.Symbol] = {}
     sf_name_to_key: Dict[str, Tuple] = {}
@@ -378,6 +465,7 @@ def _process_wave(
         if progress_callback:
             progress_callback(row_idx + 1, len(extra_rows), row)
 
+        # Stage 1: compute minor with all u-vars for differentiation prefilter
         try:
             minor, u_gens = _compute_minor_with_sf_injection(
                 char_tuples, row, vanished_sf_keys, all_vars,
@@ -389,7 +477,7 @@ def _process_wave(
         if minor == 0:
             continue
 
-        # For each target SF, differentiate the minor and classify
+        # For each target SF, differentiate the minor and find candidates
         for sf_name in target_sf_names:
             if sf_name in vanished_in_wave:
                 continue  # already confirmed, skip
@@ -411,6 +499,9 @@ def _process_wave(
             if diff_expr == 0:
                 continue
 
+            # Extract u-monomials from differentiated expression
+            mono_coeffs: List[Tuple[Tuple[int, ...], sp.Expr]] = []
+
             if use_sparse:
                 try:
                     sparse_poly = expr_to_sparse_u_poly(diff_expr, u_gens)
@@ -422,47 +513,9 @@ def _process_wave(
                         "error": str(exc),
                     })
                     continue
-
-                if not sparse_poly:
-                    continue
-
-                for exponents, coeff in sparse_poly.items():
-                    total_monomials += 1
-                    simple, classification = is_simple_coefficient(coeff)
-                    if simple:
-                        mono_expr = exponent_vector_to_monomial_expr(exponents, u_gens)
-                        mono_cli = _monomial_cli_from_monomial(exponents, u_gens)
-                        ev = VanishingEvidence(
-                            sf_name=sf_name,
-                            extra_row=row,
-                            u_monomial=str(mono_expr),
-                            monomial_cli=mono_cli,
-                            coefficient=str(coeff),
-                            classification=classification,
-                            wave=root_index,
-                            sub_wave=0,
-                        )
-                        vanished_in_wave.add(sf_name)
-                        evidence.append(ev)
-                        if live_callback:
-                            live_callback(ev)
-                        break  # one proof suffices for this SF
-                    else:
-                        # Store for sub-wave re-checking
-                        sf_in_coeff = frozenset(
-                            s.name for s in coeff.free_symbols
-                            if _is_structure_function_symbol(s)
-                        )
-                        pending_coeffs.append(_PendingCoeff(
-                            sf_name=sf_name,
-                            extra_row=row,
-                            exponents=exponents,
-                            u_gens=u_gens,
-                            coefficient=coeff,
-                            sf_symbols_in_coeff=sf_in_coeff,
-                        ))
+                if sparse_poly:
+                    mono_coeffs = list(sparse_poly.items())
             else:
-                # Dense path
                 try:
                     expanded = sp.expand(diff_expr)
                     poly = sp.Poly(expanded, *u_gens, domain="EX")
@@ -474,47 +527,119 @@ def _process_wave(
                         "error": str(exc),
                     })
                     continue
+                mono_coeffs = list(poly.as_dict().items())
 
-                for monom_tuple, coeff in poly.as_dict().items():
-                    total_monomials += 1
-                    simple, classification = is_simple_coefficient(coeff)
-                    if simple:
-                        mono_expr = exponent_vector_to_monomial_expr(monom_tuple, u_gens)
-                        mono_cli = _monomial_cli_from_monomial(monom_tuple, u_gens)
-                        ev = VanishingEvidence(
-                            sf_name=sf_name,
-                            extra_row=row,
-                            u_monomial=str(mono_expr),
-                            monomial_cli=mono_cli,
-                            coefficient=str(coeff),
-                            classification=classification,
-                            wave=root_index,
-                            sub_wave=0,
-                        )
-                        vanished_in_wave.add(sf_name)
-                        evidence.append(ev)
-                        if live_callback:
-                            live_callback(ev)
-                        break
-                    else:
-                        sf_in_coeff = frozenset(
-                            s.name for s in coeff.free_symbols
-                            if _is_structure_function_symbol(s)
-                        )
-                        pending_coeffs.append(_PendingCoeff(
-                            sf_name=sf_name,
-                            extra_row=row,
-                            exponents=monom_tuple,
-                            u_gens=u_gens,
-                            coefficient=coeff,
-                            sf_symbols_in_coeff=sf_in_coeff,
-                        ))
+            # Prefilter: find monomials with simple differentiated coefficients
+            confirmed_this_sf = False
+            for exponents, diff_coeff in mono_coeffs:
+                total_monomials += 1
+                simple, diff_class = is_simple_coefficient(diff_coeff)
 
-    # --- Sub-wave iterations: substitute newly vanished SFs in pending coeffs ---
+                if not simple:
+                    # Not a candidate from prefilter — store for sub-wave
+                    # but we need the exact coefficient for sub-wave checks
+                    mono_spec = _monomial_spec_from_monomial(exponents, u_gens)
+                    try:
+                        exact = _compute_exact_coefficient_with_sf_injection(
+                            char_tuples, row, mono_spec, vanished_sf_keys,
+                        )
+                    except Exception as exc:
+                        errors.append({
+                            "extra_row": list(row),
+                            "stage": "exact_coeff_pending",
+                            "sf": sf_name,
+                            "error": str(exc),
+                        })
+                        continue
+
+                    if exact == 0:
+                        continue
+
+                    sf_in_exact = frozenset(
+                        s.name for s in exact.free_symbols
+                        if _is_structure_function_symbol(s)
+                    )
+                    if sf_name not in sf_in_exact:
+                        continue  # target SF not in exact coeff, skip
+
+                    pending_coeffs.append(_PendingCoeff(
+                        sf_name=sf_name,
+                        extra_row=row,
+                        exponents=exponents,
+                        u_gens=u_gens,
+                        monomial_spec=mono_spec,
+                        exact_coefficient=exact,
+                        diff_coefficient=diff_coeff,
+                        diff_classification=diff_class,
+                        sf_symbols_in_exact=sf_in_exact,
+                    ))
+                    continue
+
+                # Stage 2: prefilter says simple — verify with exact coefficient
+                mono_spec = _monomial_spec_from_monomial(exponents, u_gens)
+                try:
+                    exact = _compute_exact_coefficient_with_sf_injection(
+                        char_tuples, row, mono_spec, vanished_sf_keys,
+                    )
+                except Exception as exc:
+                    errors.append({
+                        "extra_row": list(row),
+                        "stage": "exact_coeff",
+                        "sf": sf_name,
+                        "error": str(exc),
+                    })
+                    continue
+
+                if exact == 0:
+                    continue  # monomial not actually present
+
+                # Check if target SF is the sole SF in the exact coefficient
+                is_sole, exact_class = _is_sole_sf_in_coefficient(exact, sf_name)
+
+                if is_sole:
+                    mono_expr = exponent_vector_to_monomial_expr(exponents, u_gens)
+                    mono_cli = _monomial_cli_from_monomial(exponents, u_gens)
+                    ev = VanishingEvidence(
+                        sf_name=sf_name,
+                        extra_row=row,
+                        u_monomial=str(mono_expr),
+                        monomial_cli=mono_cli,
+                        exact_coefficient=str(exact),
+                        exact_classification=exact_class,
+                        diff_coefficient=str(diff_coeff),
+                        diff_classification=diff_class,
+                        wave=root_index,
+                        sub_wave=0,
+                    )
+                    vanished_in_wave.add(sf_name)
+                    evidence.append(ev)
+                    if live_callback:
+                        live_callback(ev)
+                    confirmed_this_sf = True
+                    break  # one proof suffices
+                else:
+                    # Prefilter was a false positive — exact coeff has more SFs.
+                    # Store as pending for sub-wave re-checking.
+                    sf_in_exact = frozenset(
+                        s.name for s in exact.free_symbols
+                        if _is_structure_function_symbol(s)
+                    )
+                    pending_coeffs.append(_PendingCoeff(
+                        sf_name=sf_name,
+                        extra_row=row,
+                        exponents=exponents,
+                        u_gens=u_gens,
+                        monomial_spec=mono_spec,
+                        exact_coefficient=exact,
+                        diff_coefficient=diff_coeff,
+                        diff_classification=diff_class,
+                        sf_symbols_in_exact=sf_in_exact,
+                    ))
+
+    # --- Sub-wave iterations: substitute newly vanished SFs in exact coeffs ---
     sub_wave_count = 0
     for sub_wave_num in range(1, max_sub_waves + 1):
         # Build substitution dict from SFs vanished so far in this wave
-        # (these are SFs within the same root group, not prior waves)
         wave_subs: Dict[sp.Symbol, int] = {}
         for vname in vanished_in_wave:
             if vname in sf_name_to_symbol:
@@ -530,13 +655,13 @@ def _process_wave(
             if pc.sf_name in vanished_in_wave:
                 continue  # already confirmed
 
-            # Check if this pending coeff involves any vanished SF
-            if not (pc.sf_symbols_in_coeff & vanished_in_wave):
+            # Check if this pending exact coeff involves any vanished SF
+            if not (pc.sf_symbols_in_exact & vanished_in_wave):
                 still_pending.append(pc)
                 continue
 
-            # Substitute vanished SFs -> 0
-            substituted = pc.coefficient
+            # Substitute vanished SFs -> 0 in the exact coefficient
+            substituted = pc.exact_coefficient
             for sym, val in wave_subs.items():
                 substituted = substituted.subs(sym, val)
 
@@ -544,8 +669,10 @@ def _process_wave(
                 still_pending.append(pc)  # coeff vanishes entirely, no info
                 continue
 
-            simple, classification = is_simple_coefficient(substituted)
-            if simple:
+            # Check if target SF is now the sole SF
+            is_sole, exact_class = _is_sole_sf_in_coefficient(substituted, pc.sf_name)
+
+            if is_sole:
                 mono_expr = exponent_vector_to_monomial_expr(pc.exponents, pc.u_gens)
                 mono_cli = _monomial_cli_from_monomial(pc.exponents, pc.u_gens)
                 ev = VanishingEvidence(
@@ -553,8 +680,10 @@ def _process_wave(
                     extra_row=pc.extra_row,
                     u_monomial=str(mono_expr),
                     monomial_cli=mono_cli,
-                    coefficient=str(substituted),
-                    classification=classification,
+                    exact_coefficient=str(substituted),
+                    exact_classification=exact_class,
+                    diff_coefficient=str(pc.diff_coefficient),
+                    diff_classification=pc.diff_classification,
                     wave=root_index,
                     sub_wave=sub_wave_num,
                 )
@@ -564,8 +693,8 @@ def _process_wave(
                 if live_callback:
                     live_callback(ev)
             else:
-                # Update the stored coefficient and SF set
-                new_sf_in_coeff = frozenset(
+                # Update the stored exact coefficient and SF set
+                new_sf_in_exact = frozenset(
                     s.name for s in substituted.free_symbols
                     if _is_structure_function_symbol(s)
                 )
@@ -574,8 +703,11 @@ def _process_wave(
                     extra_row=pc.extra_row,
                     exponents=pc.exponents,
                     u_gens=pc.u_gens,
-                    coefficient=substituted,
-                    sf_symbols_in_coeff=new_sf_in_coeff,
+                    monomial_spec=pc.monomial_spec,
+                    exact_coefficient=substituted,
+                    diff_coefficient=pc.diff_coefficient,
+                    diff_classification=pc.diff_classification,
+                    sf_symbols_in_exact=new_sf_in_exact,
                 ))
 
         pending_coeffs = still_pending
@@ -830,7 +962,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(
             f"  VANISHED [{finding_count[0]}]: {ev.sf_name} "
             f"via {ev.u_monomial} row={ev.extra_row} "
-            f"-> {ev.coefficient} [{ev.classification}]{sub_tag}",
+            f"exact={ev.exact_coefficient} [{ev.exact_classification}]{sub_tag}",
             flush=True,
         )
 
