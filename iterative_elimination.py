@@ -38,7 +38,6 @@ from typing import Any, Callable, Dict, FrozenSet, List, Optional, Sequence, Set
 import sympy as sp
 
 from sparse_u_monomials import (
-    differentiate_by_structure_function,
     exponent_vector_to_monomial_expr,
     expr_to_sparse_u_poly,
 )
@@ -136,39 +135,74 @@ def _is_structure_function_symbol(symbol: sp.Symbol) -> bool:
     return symbol.name.startswith("c^{")
 
 
-def _is_sole_sf_in_coefficient(
+def _is_alpha_symbol(symbol: sp.Symbol) -> bool:
+    return symbol.name.startswith("α_{") or symbol.name.startswith("α_")
+
+
+def _is_valid_exact_witness(
     exact_coeff: sp.Expr,
     target_sf_name: str,
 ) -> Tuple[bool, str]:
-    """Check if the target SF is the only structure function in the coefficient.
+    """Check whether an exact coefficient proves the target SF vanishes.
+
+    Accepted witness form:
+        target_sf**k * factor
+    where k >= 1 and factor is numeric/alpha-only.
+
+    Rejected forms include:
+        - additive expressions like alpha + target_sf**k
+        - any expression involving other structure functions
+        - target-absent expressions
+        - multiplicative cofactors with non-alpha symbolic content
 
     Returns:
-        (is_sole, classification) where classification is:
-        - "sole_sf_numeric": target SF * numeric factor
-        - "sole_sf_alpha": target SF * alpha/numeric factors
-        - "no_sf": no structure functions at all (coefficient is simple without SF)
-        - "multiple_sfs": other structure functions present alongside target
-        - "target_absent": target SF is not present
+        (is_valid, classification) where classification is one of:
+        - "sole_sf_numeric"
+        - "sole_sf_alpha"
+        - "no_sf"
+        - "target_absent"
+        - "multiple_sfs"
+        - "not_pure_target_power"
+        - "disallowed_factor_symbols"
     """
+    target_sf = sp.Symbol(target_sf_name)
+    exact_coeff = sp.expand(exact_coeff)
     free = exact_coeff.free_symbols
     sf_symbols = {s for s in free if _is_structure_function_symbol(s)}
 
     if not sf_symbols:
         return False, "no_sf"
+    if target_sf not in sf_symbols:
+        return False, "target_absent"
+    if any(sym != target_sf for sym in sf_symbols):
+        return False, "multiple_sfs"
 
-    if target_sf_name not in {s.name for s in sf_symbols}:
+    poly = sp.Poly(exact_coeff, target_sf, domain="EX")
+    if poly is None:
+        return False, "not_pure_target_power"
+    coeffs = poly.all_coeffs()
+    degree = poly.degree()
+    if degree is None or degree < 1:
         return False, "target_absent"
 
-    if len(sf_symbols) == 1:
-        # Only one SF present — must be the target
-        non_sf = free - sf_symbols
-        if not non_sf:
-            return True, "sole_sf_numeric"
-        if all(s.name.startswith("α_") or s.name.startswith("α_{") for s in non_sf):
-            return True, "sole_sf_alpha"
-        return True, "sole_sf_numeric"  # other symbols are fine (constants etc.)
+    nonzero_positions = [idx for idx, coeff in enumerate(coeffs) if coeff != 0]
+    if len(nonzero_positions) != 1:
+        return False, "not_pure_target_power"
 
-    return False, "multiple_sfs"
+    position = nonzero_positions[0]
+    power = degree - position
+    if power < 1:
+        return False, "not_pure_target_power"
+
+    factor = sp.simplify(coeffs[position])
+    factor_free = factor.free_symbols
+    if any(_is_structure_function_symbol(sym) for sym in factor_free):
+        return False, "multiple_sfs"
+    if not factor_free:
+        return True, "sole_sf_numeric"
+    if all(_is_alpha_symbol(sym) for sym in factor_free):
+        return True, "sole_sf_alpha"
+    return False, "disallowed_factor_symbols"
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +254,7 @@ class WaveResult:
     extra_rows_searched: int
     monomials_examined: int
     sub_waves: int
+    errors: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -231,6 +266,7 @@ class WaveResult:
             "extra_rows_searched": self.extra_rows_searched,
             "monomials_examined": self.monomials_examined,
             "sub_waves": self.sub_waves,
+            "errors": self.errors,
         }
 
 
@@ -447,7 +483,8 @@ def _process_wave(
          coefficient is simple (fast, but can give false positives).
       2. EXACT VERIFICATION: for each prefilter candidate, compute the exact
          coefficient of that u-monomial in the original (un-differentiated)
-         minor.  Confirm the target SF is the sole structure function in it.
+         minor. Confirm it has the form target_sf**k * factor with k >= 1,
+         no other structure functions, and factor numeric/alpha-only.
 
     Runs sub-wave iterations on pending exact coefficients until convergence.
     """
@@ -576,7 +613,7 @@ def _process_wave(
                     continue  # monomial not actually present
 
                 # Check if target SF is the sole SF in the exact coefficient
-                is_sole, exact_class = _is_sole_sf_in_coefficient(exact, sf_name)
+                is_sole, exact_class = _is_valid_exact_witness(exact, sf_name)
 
                 if is_sole:
                     mono_expr = exponent_vector_to_monomial_expr(exponents, u_gens)
@@ -691,7 +728,7 @@ def _process_wave(
                 continue
 
             # Check if target SF is now the sole SF
-            is_sole, exact_class = _is_sole_sf_in_coefficient(substituted, pc.sf_name)
+            is_sole, exact_class = _is_valid_exact_witness(substituted, pc.sf_name)
 
             if is_sole:
                 mono_expr = exponent_vector_to_monomial_expr(pc.exponents, pc.u_gens)
@@ -749,6 +786,7 @@ def _process_wave(
         extra_rows_searched=len(extra_rows),
         monomials_examined=total_monomials,
         sub_waves=sub_wave_count,
+        errors=errors,
     )
 
 
@@ -833,6 +871,7 @@ def run_iterative_elimination(
             progress_callback=progress_callback,
         )
         waves.append(wave_result)
+        all_errors.extend(wave_result.errors)
 
         if wave_callback:
             wave_callback(wave_result)
