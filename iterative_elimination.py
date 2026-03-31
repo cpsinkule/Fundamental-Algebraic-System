@@ -406,16 +406,22 @@ def _compute_exact_coefficient_with_sf_injection(
 
 @dataclass
 class _PendingCoeff:
-    """A candidate monomial whose exact coefficient has multiple SFs."""
+    """A candidate monomial whose exact coefficient has multiple SFs.
+
+    Exact coefficient is computed lazily: only when the sub-wave phase
+    needs to substitute vanished SFs and re-check.  Until then, only
+    the diff-prefilter data and monomial_spec are stored.
+    """
     sf_name: str
     extra_row: Tuple[int, int, int]
     exponents: Tuple[int, ...]
     u_gens: List[sp.Symbol]
     monomial_spec: Dict[Tuple, int]
-    exact_coefficient: sp.Expr       # from original minor (not differentiated)
     diff_coefficient: sp.Expr        # from differentiated minor (prefilter)
     diff_classification: str         # classification from prefilter
-    sf_symbols_in_exact: FrozenSet[str]  # SF names in the exact coefficient
+    # Exact coefficient fields — populated lazily
+    exact_coefficient: Optional[sp.Expr] = None
+    sf_symbols_in_exact: Optional[FrozenSet[str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -536,42 +542,18 @@ def _process_wave(
                 simple, diff_class = is_simple_coefficient(diff_coeff)
 
                 if not simple:
-                    # Not a candidate from prefilter — store for sub-wave
-                    # but we need the exact coefficient for sub-wave checks
+                    # Not a candidate from prefilter — store for sub-wave.
+                    # Exact coefficient is computed lazily in the sub-wave
+                    # phase only if substitutions make it worth checking.
                     mono_spec = _monomial_spec_from_monomial(exponents, u_gens)
-                    try:
-                        exact = _compute_exact_coefficient_with_sf_injection(
-                            char_tuples, row, mono_spec, vanished_sf_keys,
-                        )
-                    except Exception as exc:
-                        errors.append({
-                            "extra_row": list(row),
-                            "stage": "exact_coeff_pending",
-                            "sf": sf_name,
-                            "error": str(exc),
-                        })
-                        continue
-
-                    if exact == 0:
-                        continue
-
-                    sf_in_exact = frozenset(
-                        s.name for s in exact.free_symbols
-                        if _is_structure_function_symbol(s)
-                    )
-                    if sf_name not in sf_in_exact:
-                        continue  # target SF not in exact coeff, skip
-
                     pending_coeffs.append(_PendingCoeff(
                         sf_name=sf_name,
                         extra_row=row,
                         exponents=exponents,
                         u_gens=u_gens,
                         monomial_spec=mono_spec,
-                        exact_coefficient=exact,
                         diff_coefficient=diff_coeff,
                         diff_classification=diff_class,
-                        sf_symbols_in_exact=sf_in_exact,
                     ))
                     continue
 
@@ -619,7 +601,8 @@ def _process_wave(
                     break  # one proof suffices
                 else:
                     # Prefilter was a false positive — exact coeff has more SFs.
-                    # Store as pending for sub-wave re-checking.
+                    # Store as pending for sub-wave re-checking with exact
+                    # coefficient already computed.
                     sf_in_exact = frozenset(
                         s.name for s in exact.free_symbols
                         if _is_structure_function_symbol(s)
@@ -630,9 +613,9 @@ def _process_wave(
                         exponents=exponents,
                         u_gens=u_gens,
                         monomial_spec=mono_spec,
-                        exact_coefficient=exact,
                         diff_coefficient=diff_coeff,
                         diff_classification=diff_class,
+                        exact_coefficient=exact,
                         sf_symbols_in_exact=sf_in_exact,
                     ))
 
@@ -654,6 +637,44 @@ def _process_wave(
         for pc in pending_coeffs:
             if pc.sf_name in vanished_in_wave:
                 continue  # already confirmed
+
+            # Lazily compute exact coefficient if not yet done
+            if pc.exact_coefficient is None:
+                try:
+                    exact = _compute_exact_coefficient_with_sf_injection(
+                        char_tuples, pc.extra_row, pc.monomial_spec,
+                        vanished_sf_keys,
+                    )
+                except Exception as exc:
+                    errors.append({
+                        "extra_row": list(pc.extra_row),
+                        "stage": "exact_coeff_lazy",
+                        "sf": pc.sf_name,
+                        "error": str(exc),
+                    })
+                    continue
+
+                if exact == 0:
+                    continue  # monomial not present in original minor
+
+                sf_in_exact = frozenset(
+                    s.name for s in exact.free_symbols
+                    if _is_structure_function_symbol(s)
+                )
+                if pc.sf_name not in sf_in_exact:
+                    continue  # target SF not in exact coeff
+
+                pc = _PendingCoeff(
+                    sf_name=pc.sf_name,
+                    extra_row=pc.extra_row,
+                    exponents=pc.exponents,
+                    u_gens=pc.u_gens,
+                    monomial_spec=pc.monomial_spec,
+                    diff_coefficient=pc.diff_coefficient,
+                    diff_classification=pc.diff_classification,
+                    exact_coefficient=exact,
+                    sf_symbols_in_exact=sf_in_exact,
+                )
 
             # Check if this pending exact coeff involves any vanished SF
             if not (pc.sf_symbols_in_exact & vanished_in_wave):
@@ -704,9 +725,9 @@ def _process_wave(
                     exponents=pc.exponents,
                     u_gens=pc.u_gens,
                     monomial_spec=pc.monomial_spec,
-                    exact_coefficient=substituted,
                     diff_coefficient=pc.diff_coefficient,
                     diff_classification=pc.diff_classification,
+                    exact_coefficient=substituted,
                     sf_symbols_in_exact=new_sf_in_exact,
                 ))
 
