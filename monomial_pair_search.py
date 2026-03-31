@@ -15,7 +15,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import sympy as sp
 
@@ -98,12 +98,12 @@ def _load_task_artifact(path: str) -> Dict[str, Any]:
     raise ValueError("Input JSON must be either a structure-function summary or a monomial task artifact")
 
 
-def run_monomial_pair_search(
-    input_path: str,
+def run_monomial_pair_search_from_artifact(
+    artifact: Dict[str, Any],
     *,
-    progress_callback: Optional[callable] = None,
+    input_label: str = "<in-memory artifact>",
+    progress_callback: Optional[Callable[[int, int, Tuple[int, int, int], str], None]] = None,
 ) -> MonomialPairSearchSummary:
-    artifact = _load_task_artifact(input_path)
     char_tuples = [tuple(t) for t in artifact["char_tuples"]]
     tasks = artifact["tasks"]
     errors: List[Dict[str, Any]] = []
@@ -143,13 +143,26 @@ def run_monomial_pair_search(
 
     elapsed = (datetime.now(timezone.utc) - t0).total_seconds()
     return MonomialPairSearchSummary(
-        input_path=input_path,
+        input_path=input_label,
         char_tuples=char_tuples,
         total_tasks=len(tasks),
         processed_tasks=len(results),
         results=results,
         elapsed_seconds=elapsed,
         errors=errors,
+    )
+
+
+def run_monomial_pair_search(
+    input_path: str,
+    *,
+    progress_callback: Optional[Callable[[int, int, Tuple[int, int, int], str], None]] = None,
+) -> MonomialPairSearchSummary:
+    artifact = _load_task_artifact(input_path)
+    return run_monomial_pair_search_from_artifact(
+        artifact,
+        input_label=input_path,
+        progress_callback=progress_callback,
     )
 
 
