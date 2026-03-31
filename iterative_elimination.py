@@ -11,6 +11,9 @@ The cascade is ordered by root index x of the lower edge:
 
 Vanished structure functions are zeroed at the calculator level BEFORE row
 computation to avoid carrying dead symbolic terms through the recursion.
+Within a wave, newly proved same-wave vanishings are injected only into
+later row computations in the current pass; already processed rows are not
+recomputed and are instead handled by the existing sub-wave substitution pass.
 
 CLI usage:
     python iterative_elimination.py \\
@@ -458,6 +461,7 @@ class _PendingCoeff:
     # Exact coefficient fields — populated lazily
     exact_coefficient: Optional[sp.Expr] = None
     sf_symbols_in_exact: Optional[FrozenSet[str]] = None
+    injected_sf_keys: Tuple[Tuple, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +490,12 @@ def _process_wave(
          minor. Confirm it has the form target_sf**k * factor with k >= 1,
          no other structure functions, and factor numeric/alpha-only.
 
+    Prior-wave vanishings are injected from the start of the wave. As new
+    same-wave vanishings are proved during the main row scan, they are
+    injected only into later row computations in that same pass. Earlier
+    rows are not recomputed; their pending candidates are revisited in the
+    sub-wave exact-coefficient substitution phase.
+
     Runs sub-wave iterations on pending exact coefficients until convergence.
     """
     sf_name_to_symbol: Dict[str, sp.Symbol] = {}
@@ -502,6 +512,8 @@ def _process_wave(
     pending_coeffs: List[_PendingCoeff] = []
     total_monomials = 0
     errors: List[dict] = []
+    effective_vanished_sf_keys = list(vanished_sf_keys)
+    effective_vanished_sf_key_set = set(vanished_sf_keys)
 
     # --- Pass over all extra rows ---
     for row_idx, row in enumerate(extra_rows):
@@ -511,7 +523,7 @@ def _process_wave(
         # Stage 1: compute minor with all u-vars for differentiation prefilter
         try:
             minor, u_gens = _compute_minor_with_sf_injection(
-                char_tuples, row, vanished_sf_keys, all_vars,
+                char_tuples, row, effective_vanished_sf_keys, all_vars,
             )
         except Exception as exc:
             errors.append({"extra_row": list(row), "stage": "minor", "error": str(exc)})
@@ -591,6 +603,7 @@ def _process_wave(
                         monomial_spec=mono_spec,
                         diff_coefficient=diff_coeff,
                         diff_classification=diff_class,
+                        injected_sf_keys=tuple(effective_vanished_sf_keys),
                     ))
                     continue
 
@@ -598,7 +611,7 @@ def _process_wave(
                 mono_spec = _monomial_spec_from_monomial(exponents, u_gens)
                 try:
                     exact = _compute_exact_coefficient_with_sf_injection(
-                        char_tuples, row, mono_spec, vanished_sf_keys,
+                        char_tuples, row, mono_spec, effective_vanished_sf_keys,
                     )
                 except Exception as exc:
                     errors.append({
@@ -632,9 +645,12 @@ def _process_wave(
                     )
                     vanished_in_wave.add(sf_name)
                     evidence.append(ev)
+                    sf_key = sf_name_to_key[sf_name]
+                    if sf_key not in effective_vanished_sf_key_set:
+                        effective_vanished_sf_key_set.add(sf_key)
+                        effective_vanished_sf_keys.append(sf_key)
                     if live_callback:
                         live_callback(ev)
-                    confirmed_this_sf = True
                     break  # one proof suffices
                 else:
                     # Prefilter was a false positive — exact coeff has more SFs.
@@ -654,6 +670,7 @@ def _process_wave(
                         diff_classification=diff_class,
                         exact_coefficient=exact,
                         sf_symbols_in_exact=sf_in_exact,
+                        injected_sf_keys=tuple(effective_vanished_sf_keys),
                     ))
 
     # --- Sub-wave iterations: substitute newly vanished SFs in exact coeffs ---
@@ -680,7 +697,7 @@ def _process_wave(
                 try:
                     exact = _compute_exact_coefficient_with_sf_injection(
                         char_tuples, pc.extra_row, pc.monomial_spec,
-                        vanished_sf_keys,
+                        list(pc.injected_sf_keys),
                     )
                 except Exception as exc:
                     errors.append({
@@ -711,6 +728,7 @@ def _process_wave(
                     diff_classification=pc.diff_classification,
                     exact_coefficient=exact,
                     sf_symbols_in_exact=sf_in_exact,
+                    injected_sf_keys=pc.injected_sf_keys,
                 )
 
             # Check if this pending exact coeff involves any vanished SF
@@ -766,6 +784,7 @@ def _process_wave(
                     diff_classification=pc.diff_classification,
                     exact_coefficient=substituted,
                     sf_symbols_in_exact=new_sf_in_exact,
+                    injected_sf_keys=pc.injected_sf_keys,
                 ))
 
         pending_coeffs = still_pending

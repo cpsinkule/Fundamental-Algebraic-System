@@ -98,6 +98,159 @@ def test_process_wave_rejects_additive_exact_witness(monkeypatch):
     assert result.unresolved_sfs == [target_sym.name]
 
 
+def test_process_wave_injects_same_wave_zeroes_into_future_rows(monkeypatch):
+    target_sym = sp.Symbol("c^{1,(0,1)}_{(0,(1,2)),(0,2)}")
+    sf_key = ("sf_key",)
+    u0 = sp.Symbol("u_{0,0}")
+    row_calls = []
+
+    def fake_compute_minor(char_tuples, row, vanished_sf_keys, all_vars):
+        row_calls.append((row, tuple(vanished_sf_keys)))
+        return sp.Symbol(f"minor_{row[1]}"), [u0]
+
+    monkeypatch.setattr(ie, "_compute_minor_with_sf_injection", fake_compute_minor)
+    monkeypatch.setattr(
+        ie.sp,
+        "diff",
+        lambda expr, sf: u0 if expr == sp.Symbol("minor_0") and sf == target_sym else sp.Integer(0),
+    )
+    monkeypatch.setattr(
+        ie,
+        "expr_to_sparse_u_poly",
+        lambda expr, u_gens: {(1,): sp.Integer(1)} if expr == u0 else {},
+    )
+    monkeypatch.setattr(
+        ie,
+        "_compute_exact_coefficient_with_sf_injection",
+        lambda *args, **kwargs: target_sym**2,
+    )
+
+    result = ie._process_wave(
+        char_tuples=[(1, 2)],
+        root_index=0,
+        target_sfs=[(target_sym, sf_key)],
+        vanished_sf_keys=[],
+        extra_rows=[(0, 0, 1), (0, 1, 1)],
+        all_vars=[("vertex", 0, 0)],
+        use_sparse=True,
+        max_sub_waves=1,
+        live_callback=None,
+        progress_callback=None,
+    )
+
+    assert result.vanished_sfs == [target_sym.name]
+    assert row_calls == [
+        ((0, 0, 1), ()),
+        ((0, 1, 1), (sf_key,)),
+    ]
+
+
+def test_process_wave_does_not_recompute_earlier_rows_after_same_wave_vanishing(monkeypatch):
+    target_sym = sp.Symbol("c^{1,(0,1)}_{(0,(1,2)),(0,2)}")
+    sf_key = ("sf_key",)
+    u0 = sp.Symbol("u_{0,0}")
+    row_calls = []
+
+    def fake_compute_minor(char_tuples, row, vanished_sf_keys, all_vars):
+        row_calls.append((row, tuple(vanished_sf_keys)))
+        return sp.Symbol(f"minor_{row[1]}"), [u0]
+
+    monkeypatch.setattr(ie, "_compute_minor_with_sf_injection", fake_compute_minor)
+    monkeypatch.setattr(
+        ie.sp,
+        "diff",
+        lambda expr, sf: u0 if expr in {sp.Symbol("minor_0"), sp.Symbol("minor_1")} and sf == target_sym else sp.Integer(0),
+    )
+    monkeypatch.setattr(
+        ie,
+        "expr_to_sparse_u_poly",
+        lambda expr, u_gens: {(1,): sp.Integer(1)} if expr == u0 else {},
+    )
+    monkeypatch.setattr(
+        ie,
+        "_compute_exact_coefficient_with_sf_injection",
+        lambda *args, **kwargs: target_sym**2,
+    )
+
+    ie._process_wave(
+        char_tuples=[(1, 2)],
+        root_index=0,
+        target_sfs=[(target_sym, sf_key)],
+        vanished_sf_keys=[],
+        extra_rows=[(0, 0, 1), (0, 1, 1)],
+        all_vars=[("vertex", 0, 0)],
+        use_sparse=True,
+        max_sub_waves=1,
+        live_callback=None,
+        progress_callback=None,
+    )
+
+    assert len(row_calls) == 2
+    assert row_calls[0] == ((0, 0, 1), ())
+    assert row_calls[1] == ((0, 1, 1), (sf_key,))
+
+
+def test_process_wave_same_wave_injection_coexists_with_sub_wave_resolution(monkeypatch):
+    sf_a = sp.Symbol("c^{1,(0,1)}_{(0,(1,2)),(0,2)}")
+    sf_b = sp.Symbol("c^{1,(0,1)}_{(0,(0,2)),(0,1)}")
+    key_a = ("sf_a_key",)
+    key_b = ("sf_b_key",)
+    u0 = sp.Symbol("u_{0,0}")
+    alpha0 = sp.Symbol("α_{0}")
+    row_calls = []
+
+    def fake_compute_minor(char_tuples, row, vanished_sf_keys, all_vars):
+        row_calls.append((row, tuple(vanished_sf_keys)))
+        return sp.Symbol(f"minor_{row[1]}"), [u0]
+
+    def fake_diff(expr, sf):
+        if expr == sp.Symbol("minor_0") and sf == sf_a:
+            return sp.Symbol("diff_row0_a")
+        if expr == sp.Symbol("minor_1") and sf == sf_b:
+            return sp.Symbol("diff_row1_b")
+        return sp.Integer(0)
+
+    def fake_sparse(expr, u_gens):
+        if expr == sp.Symbol("diff_row0_a"):
+            return {(1,): sf_b}
+        if expr == sp.Symbol("diff_row1_b"):
+            return {(1,): sp.Integer(1)}
+        return {}
+
+    def fake_exact(char_tuples, extra_row, monomial_spec, vanished_sf_keys):
+        if extra_row == (0, 1, 1):
+            return sf_b**2
+        if extra_row == (0, 0, 1):
+            return sf_a**2 * sf_b + alpha0 * sf_a**2
+        raise AssertionError(f"Unexpected exact request for row {extra_row}")
+
+    monkeypatch.setattr(ie, "_compute_minor_with_sf_injection", fake_compute_minor)
+    monkeypatch.setattr(ie.sp, "diff", fake_diff)
+    monkeypatch.setattr(ie, "expr_to_sparse_u_poly", fake_sparse)
+    monkeypatch.setattr(ie, "_compute_exact_coefficient_with_sf_injection", fake_exact)
+
+    result = ie._process_wave(
+        char_tuples=[(1, 2)],
+        root_index=0,
+        target_sfs=[(sf_a, key_a), (sf_b, key_b)],
+        vanished_sf_keys=[],
+        extra_rows=[(0, 0, 1), (0, 1, 1)],
+        all_vars=[("vertex", 0, 0)],
+        use_sparse=True,
+        max_sub_waves=3,
+        live_callback=None,
+        progress_callback=None,
+    )
+
+    assert row_calls == [
+        ((0, 0, 1), ()),
+        ((0, 1, 1), ()),
+    ]
+    assert set(result.vanished_sfs) == {sf_a.name, sf_b.name}
+    assert any(ev.sf_name == sf_b.name and ev.sub_wave == 0 for ev in result.evidence)
+    assert any(ev.sf_name == sf_a.name and ev.sub_wave == 1 for ev in result.evidence)
+
+
 def test_run_iterative_elimination_accumulates_wave_errors(monkeypatch):
     wave = ie.WaveResult(
         root_index=0,
