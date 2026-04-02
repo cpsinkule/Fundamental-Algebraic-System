@@ -27,6 +27,27 @@ def test_is_valid_exact_witness_rejects_additive_and_multi_sf_cases():
     assert ie._is_valid_exact_witness(alpha0, target) == (False, "no_sf")
 
 
+def test_load_seeded_vanished_sfs_accepts_live_output_lines(tmp_path):
+    seed_file = tmp_path / "seeded.txt"
+    seed_file.write_text(
+        "\n".join(
+            [
+                "# copied from terminal",
+                "VANISHED [1]: c^{1,(0,1)}_{(0,(0,1)),(0,0)} via u_{0,0}",
+                "c^{1,(0,2)}_{(0,(0,1)),(0,0)}",
+                "VANISHED [1]: c^{1,(0,1)}_{(0,(0,1)),(0,0)} via duplicate",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert ie._load_seeded_vanished_sfs(str(seed_file)) == [
+        "c^{1,(0,1)}_{(0,(0,1)),(0,0)}",
+        "c^{1,(0,2)}_{(0,(0,1)),(0,0)}",
+    ]
+
+
 def test_process_wave_records_vanishing_evidence_from_exact_witness(monkeypatch):
     target_sym = sp.Symbol("c^{1,(0,1)}_{(0,(1,2)),(0,2)}")
     u0 = sp.Symbol("u_{0,0}")
@@ -276,6 +297,78 @@ def test_run_iterative_elimination_accumulates_wave_errors(monkeypatch):
     assert result.waves[0].errors == [{"stage": "exact_coeff", "error": "boom"}]
 
 
+def test_run_iterative_elimination_seeds_vanished_targets_and_starts_later_wave(monkeypatch):
+    sf_a = sp.Symbol("sf_a")
+    sf_b = sp.Symbol("sf_b")
+    sf_c = sp.Symbol("sf_c")
+    key_a = ("key_a",)
+    key_b = ("key_b",)
+    key_c = ("key_c",)
+    process_calls = []
+
+    monkeypatch.setattr(
+        ie,
+        "enumerate_target_sfs",
+        lambda *args, **kwargs: {
+            0: [(sf_a, key_a), (sf_b, key_b)],
+            1: [(sf_c, key_c)],
+        },
+    )
+    monkeypatch.setattr(ie, "enumerate_row_complements", lambda *args, **kwargs: [(0, 0, 1)])
+    monkeypatch.setattr(ie, "build_all_vars", lambda *args, **kwargs: [("vertex", 0, 0)])
+
+    def fake_process_wave(**kwargs):
+        process_calls.append(kwargs)
+        return ie.WaveResult(
+            root_index=kwargs["root_index"],
+            target_sfs=[sf_sym.name for sf_sym, _ in kwargs["target_sfs"]],
+            vanished_sfs=["sf_c"],
+            evidence=[],
+            unresolved_sfs=[],
+            extra_rows_searched=1,
+            monomials_examined=0,
+            sub_waves=0,
+            errors=[],
+        )
+
+    monkeypatch.setattr(ie, "_process_wave", fake_process_wave)
+
+    result = ie.run_iterative_elimination(
+        [(1, 2)],
+        seeded_vanished_sfs=[sf_a.name],
+        start_wave=1,
+    )
+
+    assert len(process_calls) == 1
+    assert process_calls[0]["root_index"] == 1
+    assert process_calls[0]["target_sfs"] == [(sf_c, key_c)]
+    assert process_calls[0]["vanished_sf_keys"] == [key_a]
+    assert result.seeded_vanished_sfs == [sf_a.name]
+    assert result.start_wave == 1
+    assert result.all_vanished_sfs == [sf_a.name, sf_c.name]
+
+
+def test_run_iterative_elimination_rejects_late_start_without_seed_file():
+    monkeypatch_targets = {
+        0: [(sp.Symbol("sf_a"), ("key_a",))],
+        1: [(sp.Symbol("sf_b"), ("key_b",))],
+    }
+    original = ie.enumerate_target_sfs
+    ie.enumerate_target_sfs = lambda *args, **kwargs: monkeypatch_targets
+    try:
+        ie.run_iterative_elimination(
+            [(1, 2)],
+            seeded_vanished_sfs=[],
+            start_wave=1,
+        )
+    except ValueError as exc:
+        assert "requires --seed-vanished-file" in str(exc)
+    else:
+        raise AssertionError("Expected late start without seeded vanishings to fail")
+    finally:
+        ie.enumerate_target_sfs = original
+
+
 def test_cli_result_json_includes_wave_and_top_level_errors(tmp_path, monkeypatch, capsys):
     wave = ie.WaveResult(
         root_index=0,
@@ -328,3 +421,62 @@ def test_cli_result_json_includes_wave_and_top_level_errors(tmp_path, monkeypatc
     assert payload["errors"] == [{"stage": "poly", "error": "boom"}]
     assert payload["waves"][0]["errors"] == [{"stage": "poly", "error": "boom"}]
     assert "Computation errors (1):" in out
+
+
+def test_cli_restart_uses_seed_file_and_filters_scope(tmp_path, monkeypatch, capsys):
+    seed_file = tmp_path / "seeded.txt"
+    seed_file.write_text(
+        "VANISHED [22]: sf_a via witness\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        ie,
+        "enumerate_target_sfs",
+        lambda *args, **kwargs: {
+            0: [(sp.Symbol("sf_a"), ("key_a",)), (sp.Symbol("sf_b"), ("key_b",))],
+            1: [(sp.Symbol("sf_c"), ("key_c",))],
+        },
+    )
+
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return ie.EliminationResult(
+            char_tuples=[(1, 2)],
+            component_0_index=0,
+            component_1_index=1,
+            waves=[],
+            all_vanished_sfs=["sf_a"],
+            all_unresolved_sfs=[],
+            total_sfs_tested=1,
+            elapsed_seconds=0.0,
+            success=True,
+            seeded_vanished_sfs=["sf_a"],
+            start_wave=1,
+        )
+
+    monkeypatch.setattr(ie, "run_iterative_elimination", fake_run)
+
+    exit_code = ie.main(
+        [
+            "--tuples",
+            "1,2",
+            "--seed-vanished-file",
+            str(seed_file),
+            "--start-wave",
+            "1",
+            "--output-dir",
+            str(tmp_path),
+            "--prefix",
+            "restart",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert captured["seeded_vanished_sfs"] == ["sf_a"]
+    assert captured["start_wave"] == 1
+    assert "Type 2 SFs to test this run: 1" in out
+    assert "Seeded vanished SFs: 1" in out

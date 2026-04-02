@@ -286,6 +286,8 @@ class EliminationResult:
     success: bool
     error_message: Optional[str] = None
     errors: List[dict] = field(default_factory=list)
+    seeded_vanished_sfs: List[str] = field(default_factory=list)
+    start_wave: Optional[int] = None
 
     def to_dict(self) -> dict:
         return {
@@ -303,6 +305,8 @@ class EliminationResult:
             "error_message": self.error_message,
             "elapsed_seconds": round(self.elapsed_seconds, 2),
             "errors": self.errors,
+            "seeded_vanished_sfs": self.seeded_vanished_sfs,
+            "start_wave": self.start_wave,
             "waves": [w.to_dict() for w in self.waves],
         }
 
@@ -359,6 +363,103 @@ def enumerate_target_sfs(
             result[root_idx] = sfs_for_root
 
     return result
+
+
+def _extract_seeded_sf_name(line: str) -> Optional[str]:
+    """Extract a structure-function name from a seed-file line.
+
+    Supported formats:
+      - plain canonical names such as ``c^{...}_{...}``
+      - copied live output lines such as ``VANISHED [7]: c^{...}_{...} via ...``
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if "VANISHED" in stripped and ":" in stripped:
+        stripped = stripped.split(":", 1)[1].strip()
+    if " via " in stripped:
+        stripped = stripped.split(" via ", 1)[0].strip()
+    return stripped or None
+
+
+def _load_seeded_vanished_sfs(path: str) -> List[str]:
+    names: List[str] = []
+    seen: Set[str] = set()
+    with open(path, "r", encoding="utf-8") as fp:
+        for raw_line in fp:
+            sf_name = _extract_seeded_sf_name(raw_line)
+            if not sf_name or sf_name in seen:
+                continue
+            seen.add(sf_name)
+            names.append(sf_name)
+    return names
+
+
+def _prepare_restart_targets(
+    sf_groups: Dict[int, List[Tuple[sp.Symbol, Tuple]]],
+    seeded_vanished_sfs: Optional[Sequence[str]],
+    start_wave: Optional[int],
+) -> Tuple[Dict[int, List[Tuple[sp.Symbol, Tuple]]], List[str], List[Tuple]]:
+    """Filter targets for a restart-aware elimination run.
+
+    Returns:
+        (filtered_groups, seeded_names, seeded_keys)
+    """
+    if not sf_groups:
+        return {}, [], []
+
+    all_targets: Dict[str, Tuple] = {}
+    for targets in sf_groups.values():
+        for sf_sym, sf_key in targets:
+            all_targets[sf_sym.name] = sf_key
+
+    seeded_names: List[str] = []
+    seeded_seen: Set[str] = set()
+    for sf_name in seeded_vanished_sfs or []:
+        if sf_name in seeded_seen:
+            continue
+        seeded_seen.add(sf_name)
+        seeded_names.append(sf_name)
+
+    unknown = sorted(name for name in seeded_names if name not in all_targets)
+    if unknown:
+        raise ValueError(
+            "Unknown seeded structure functions: " + ", ".join(unknown)
+        )
+
+    available_roots = sorted(sf_groups.keys())
+    first_root = available_roots[0]
+
+    if start_wave is None:
+        effective_start_wave = first_root
+    else:
+        if start_wave not in sf_groups:
+            raise ValueError(
+                f"start-wave {start_wave} is not a valid root index; "
+                f"available waves: {', '.join(str(root) for root in available_roots)}"
+            )
+        if start_wave > first_root and not seeded_names:
+            raise ValueError(
+                "start-wave beyond the first wave requires --seed-vanished-file "
+                "so prior-wave vanishings are injected and treated as resolved."
+            )
+        effective_start_wave = start_wave
+
+    seeded_set = set(seeded_names)
+    filtered_groups: Dict[int, List[Tuple[sp.Symbol, Tuple]]] = {}
+    for root_idx in available_roots:
+        if root_idx < effective_start_wave:
+            continue
+        filtered = [
+            (sf_sym, sf_key)
+            for sf_sym, sf_key in sf_groups[root_idx]
+            if sf_sym.name not in seeded_set
+        ]
+        if filtered:
+            filtered_groups[root_idx] = filtered
+
+    seeded_keys = [all_targets[name] for name in seeded_names]
+    return filtered_groups, seeded_names, seeded_keys
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +925,8 @@ def run_iterative_elimination(
     live_callback: Optional[Callable[[VanishingEvidence], None]] = None,
     progress_callback: Optional[Callable[[int, int, Tuple[int, int, int]], None]] = None,
     wave_callback: Optional[Callable[[WaveResult], None]] = None,
+    seeded_vanished_sfs: Optional[Sequence[str]] = None,
+    start_wave: Optional[int] = None,
 ) -> EliminationResult:
     """Run iterative elimination across all root groups.
 
@@ -837,6 +940,9 @@ def run_iterative_elimination(
         live_callback: Called for each VanishingEvidence as found.
         progress_callback: Called as (current, total, extra_row) per row.
         wave_callback: Called after each wave completes.
+        seeded_vanished_sfs: SF names to treat as already proved vanished.
+        start_wave: Root-index wave to start from. Safe for restart use only
+            when seeded_vanished_sfs provides the prior-wave vanishings.
 
     Returns:
         EliminationResult with full cascade details.
@@ -844,21 +950,28 @@ def run_iterative_elimination(
     t0 = time.monotonic()
 
     # Enumerate target SFs grouped by root
-    sf_groups = enumerate_target_sfs(char_tuples, comp_0, comp_1)
+    all_sf_groups = enumerate_target_sfs(char_tuples, comp_0, comp_1)
+    sf_groups, seeded_names, seeded_keys = _prepare_restart_targets(
+        all_sf_groups,
+        seeded_vanished_sfs=seeded_vanished_sfs,
+        start_wave=start_wave,
+    )
 
-    if not sf_groups:
+    if not all_sf_groups:
         elapsed = time.monotonic() - t0
         return EliminationResult(
             char_tuples=list(char_tuples),
             component_0_index=comp_0,
             component_1_index=comp_1,
             waves=[],
-            all_vanished_sfs=[],
+            all_vanished_sfs=seeded_names,
             all_unresolved_sfs=[],
             total_sfs_tested=0,
             elapsed_seconds=elapsed,
             success=True,
             error_message=None,
+            seeded_vanished_sfs=seeded_names,
+            start_wave=start_wave,
         )
 
     # Build extra rows and all_vars once
@@ -867,8 +980,8 @@ def run_iterative_elimination(
     all_vars = build_all_vars(char_tuples)
 
     # Accumulate vanished SF keys across waves
-    all_vanished_keys: List[Tuple] = []
-    all_vanished_names: List[str] = []
+    all_vanished_keys: List[Tuple] = list(seeded_keys)
+    all_vanished_names: List[str] = list(seeded_names)
     waves: List[WaveResult] = []
     total_sfs_tested = 0
     all_errors: List[dict] = []
@@ -925,6 +1038,8 @@ def run_iterative_elimination(
                 success=False,
                 error_message=error_msg,
                 errors=all_errors,
+                seeded_vanished_sfs=seeded_names,
+                start_wave=start_wave,
             )
 
     elapsed = time.monotonic() - t0
@@ -940,6 +1055,8 @@ def run_iterative_elimination(
         success=True,
         error_message=None,
         errors=all_errors,
+        seeded_vanished_sfs=seeded_names,
+        start_wave=start_wave,
     )
 
 
@@ -1001,6 +1118,21 @@ Examples:
         "--max-sub-waves", type=int, default=10,
         help="Maximum intra-wave sub-iterations (default: 10).",
     )
+    parser.add_argument(
+        "--seed-vanished-file",
+        help=(
+            "Path to a file of already-vanished structure functions. Accepts "
+            "either plain c^{...}_{...} names or pasted live VANISHED lines."
+        ),
+    )
+    parser.add_argument(
+        "--start-wave", type=int,
+        help=(
+            "Restart from this root-index wave. For safe mid-run restart, pair "
+            "with --seed-vanished-file and start from the beginning of the "
+            "current wave."
+        ),
+    )
     return parser
 
 
@@ -1010,15 +1142,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     char_tuples = _parse_tuples(args.tuples)
     use_sparse = not args.dense
+    seeded_names: List[str] = []
+
+    if args.seed_vanished_file:
+        try:
+            seeded_names = _load_seeded_vanished_sfs(args.seed_vanished_file)
+        except OSError as exc:
+            parser.error(f"Could not read --seed-vanished-file: {exc}")
 
     os.makedirs(args.output_dir, exist_ok=True)
     result_path = os.path.join(args.output_dir, f"{args.prefix}_result.json")
     vanished_path = os.path.join(args.output_dir, f"{args.prefix}_vanished.txt")
 
     # Enumerate SFs to show scope before starting
-    sf_groups = enumerate_target_sfs(char_tuples, args.component_0, args.component_1)
+    all_sf_groups = enumerate_target_sfs(char_tuples, args.component_0, args.component_1)
+    try:
+        sf_groups, prepared_seeded_names, _ = _prepare_restart_targets(
+            all_sf_groups,
+            seeded_vanished_sfs=seeded_names,
+            start_wave=args.start_wave,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     graph_0 = ComponentGraph.from_characteristic_tuple(char_tuples[args.component_0])
-    total_sfs = sum(len(sfs) for sfs in sf_groups.values())
+    total_sfs = sum(len(sfs) for sfs in all_sf_groups.values())
+    remaining_sfs = sum(len(sfs) for sfs in sf_groups.values())
 
     if not args.quiet:
         print(f"System: {char_tuples}")
@@ -1026,7 +1174,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               f"Gamma_1 = component {args.component_1}")
         print(f"Gamma_0 roots: {graph_0.num_roots}, "
               f"waves to process: {len(sf_groups)}")
-        print(f"Total Type 2 SFs to test: {total_sfs}")
+        print(f"Total Type 2 SFs available: {total_sfs}")
+        print(f"Type 2 SFs to test this run: {remaining_sfs}")
+        if prepared_seeded_names:
+            print(f"Seeded vanished SFs: {len(prepared_seeded_names)}")
+        if args.start_wave is not None:
+            print(f"Starting at wave/root x={args.start_wave}")
         for root_idx in sorted(sf_groups.keys()):
             sf_names = [sym.name for sym, _ in sf_groups[root_idx]]
             print(f"  Root x={root_idx}: {len(sf_names)} SFs")
@@ -1069,6 +1222,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         live_callback=live_cb,
         progress_callback=progress,
         wave_callback=wave_cb,
+        seeded_vanished_sfs=prepared_seeded_names,
+        start_wave=args.start_wave,
     )
 
     # Write outputs
